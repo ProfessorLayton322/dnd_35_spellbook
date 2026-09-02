@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D&D 3.5 Spellbook Builder</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main>
+  <h1>D&D 3.5 Spellbook Builder</h1>
+  {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <section>
+    <h2>Data</h2>
+    <form action="/import-class" method="post" class="row">
+      <label>Arkalself class URL <input name="url" type="url" required placeholder="https://dnd.arkalseif.info/classes/warmage/index.html"></label>
+      <button>Import class</button>
+    </form>
+    {% if state.imported_classes %}
+      <ul>{% for name, item in state.imported_classes|dictsort %}<li><b>{{ name }}</b>: {% for level, ids in item.levels|dictsort %}L{{ level }}={{ ids|length }}{% if not loop.last %}, {% endif %}{% endfor %}</li>{% endfor %}</ul>
+    {% else %}<p class="muted">No classes imported yet. The CLI also provides <code>build-summon-index</code>.</p>{% endif %}
+  </section>
+
+  <section>
+    <h2>Spellbooks</h2>
+    <form action="/spellbooks" method="post" class="row">
+      <label>Name <input name="name" required maxlength="80"></label><button>Create</button>
+    </form>
+    {% if state.spellbooks %}
+      <nav>{% for id, item in state.spellbooks|dictsort %}<a href="/?book={{ id }}" {% if selected and selected.id == id %}class="selected"{% endif %}>{{ item.name }}</a>{% endfor %}</nav>
+    {% endif %}
+  </section>
+
+  {% if selected %}
+  <section>
+    <h2>{{ selected.name }}</h2>
+    <p>{{ selected.batches|length }} committed batch(es); {{ selected.content_page_count }} content page(s).</p>
+    {% if not selected.open_batch %}
+      <form action="/spellbooks/{{ selected.id }}/begin" method="post"><button>Begin batch</button></form>
+    {% else %}
+      <h3>Open batch {{ selected.open_batch.id }}</h3>
+      <form action="/spellbooks/{{ selected.id }}/add-spell" method="post" class="row autocomplete">
+        <label>Spell prefix <input id="spell-query" autocomplete="off" placeholder="fire"></label>
+        <input id="spell-id" name="spell_id" type="hidden">
+        <select id="spell-results" size="5" aria-label="Prefix-matched spells"></select>
+        <button>Add selected spell</button>
+      </form>
+      {% if state.imported_classes %}
+      <form action="/spellbooks/{{ selected.id }}/add-class-level" method="post" class="row">
+        <label>Class <select name="class_name">{% for name in state.imported_classes|sort %}<option>{{ name }}</option>{% endfor %}</select></label>
+        <label>Level <select name="level">{% for level in range(10) %}<option>{{ level }}</option>{% endfor %}</select></label>
+        <button>Add entire class-level list</button>
+      </form>
+      {% endif %}
+      <ol>
+        {% for item in open_items %}<li>{{ item.title }} <form class="inline" action="/spellbooks/{{ selected.id }}/remove/{{ loop.index0 }}" method="post"><button class="small">remove</button></form></li>{% else %}<li class="muted">No spells in this batch.</li>{% endfor %}
+      </ol>
+      <form action="/spellbooks/{{ selected.id }}/commit" method="post"><button {% if not open_items %}disabled{% endif %}>End and commit batch</button></form>
+    {% endif %}
+  </section>
+  <section>
+    <h2>Exports</h2>
+    {% if selected.exports %}<p><a href="/spellbooks/{{ selected.id }}/files/full">Full PDF</a> · <a href="/spellbooks/{{ selected.id }}/files/toc">Latest TOC diff</a> · <a href="/spellbooks/{{ selected.id }}/files/append">Latest append diff</a> · <a href="/spellbooks/{{ selected.id }}/files/manifest">Manifest</a></p>{% else %}<p class="muted">Commit a batch to generate exports.</p>{% endif %}
+  </section>
+  {% endif %}
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
