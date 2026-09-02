@@ -9,7 +9,7 @@ The server binds to `127.0.0.1` by default. It has no accounts and is intended f
 - Python 3.12, FastAPI, Jinja, and small vanilla JavaScript for the localhost UI.
 - Requests with a descriptive user agent, retry/backoff, timeout, and configurable inter-request delay.
 - Beautiful Soup semantic parsers for Arkalself and d20srd.
-- Versioned UTF-8 JSON indexes and authoritative server state, written through atomic temporary-file replacement.
+- Versioned UTF-8 JSON indexes and authoritative server state, written through atomic temporary-file replacement. Stored file references use portable `/` separators, while readers also accept state created on Windows with `\` separators.
 - ReportLab for deterministic content/TOC rendering and pypdf for lossless segment assembly.
 - Immutable per-batch content PDF segments. A full book is always a fresh TOC followed by the original segment files.
 
@@ -56,6 +56,8 @@ Paste an Arkalself class URL into the UI, or run:
 ```
 
 Class import discovers every linked level rather than assuming levels 0–9, follows each level's spell table, fetches every spell, and merges stable URL-derived IDs on re-import. Global spell class/level mappings and the imported class-list membership are separate.
+
+The `dnd.arkalseif.info` pages are a static mirror: their visible `?page=N` links currently return page 1 again. For level listings and spell content, the importer automatically uses Arkalseif's linked working/filter database at `dndtools.org` and requests up to 1,000 rows. If a listing is still paginated, every same-list page is followed and de-duplicated. The advertised total is checked so a partial import fails explicitly instead of silently stopping at 20 spells. URL-derived IDs are identical for the static and working URL forms, so re-importing does not replace existing spell identities.
 
 The summon build reads all Summon Monster I–IX and Summon Nature's Ally I–IX tables. It prefers linked monster pages and anchors, then resolves named statblock columns deterministically. Qualified `(any)` entries intentionally expand to all applicable variants. An unresolved entry is written to `summon_validation.json` and makes the command fail.
 
@@ -128,6 +130,8 @@ Every top-level document and canonical record has `schema_version: 1`.
 
 Historical batch state stores the exact explicit printable entity sequence plus each entity's logical starting page. Canonical records remain separate; their later re-import cannot change an already rendered segment.
 
+Runtime state is relocatable as a directory between Windows, Linux, and macOS. Copy the whole `runtime/` directory, then point `--runtime` (or `DND_SPELLBOOK_RUNTIME`) at its new location. State and manifests never persist an absolute runtime path. Generated files are standard PDFs with embedded core-font references and are validated by reopening them with pypdf; they do not depend on the platform that rendered them.
+
 ## Tests and verification
 
 Normal tests are entirely fixture/local and do not depend on either remote site:
@@ -141,6 +145,7 @@ Compact sanitized fixtures cover class/level discovery, complete spell parsing, 
 Live verification performed on 2026-09-02 produced:
 
 - Warmage levels 0–9: `4, 18, 14, 11, 13, 10, 8, 8, 7, 6` links/records; 99 unique records, zero missing names or descriptions, and no detected chrome leakage.
+- Wizard complete level listings 0–9: `46, 291, 422, 385, 344, 308, 229, 164, 138, 136` links. Every level exceeds the static mirror's 20-row first page.
 - Summons: 18 pages, 208 table entries, 87 linked monster pages, 202 canonical statblocks, 253 resolved printable references after legitimate “any” expansion, and zero unresolved entries.
 - Dire Bat: one statblock; Dire Rat: separate `dire-rat` and `fiendish-dire-rat` records. Summon Monster I selects the fiendish record.
 - PDF live-data dry run: batch 1 pages 1–4; batch 2 pages 5–27 with 14 Summon Monster I statblocks; 27 content streams verified, unchanged batch-1 hash, and byte-identical batch-2 append/segment files.

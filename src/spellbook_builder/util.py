@@ -7,7 +7,7 @@ import re
 import tempfile
 import unicodedata
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -57,6 +57,26 @@ def atomic_json_write(path: Path, value: Any) -> None:
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def portable_relative_path(path: Path, root: Path) -> str:
+    """Serialize a relative filesystem path with platform-neutral separators."""
+
+    return path.relative_to(root).as_posix()
+
+
+def resolve_portable_path(root: Path, stored_path: str) -> Path:
+    """Resolve state written on POSIX or Windows beneath ``root`` safely."""
+
+    normalized = str(stored_path).replace("\\", "/")
+    relative = PurePosixPath(normalized)
+    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError(f"Invalid runtime-relative path: {stored_path}")
+    # A drive prefix remains a normal PurePosixPath component, so reject it
+    # explicitly before joining on POSIX hosts.
+    if relative.parts[0].endswith(":"):
+        raise ValueError(f"Invalid runtime-relative path: {stored_path}")
+    return root.joinpath(*relative.parts)
 
 
 def default_runtime_dir() -> Path:

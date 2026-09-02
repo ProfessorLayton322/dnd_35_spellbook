@@ -13,6 +13,7 @@ from .arkal import import_class
 from .fetch import Fetcher
 from .service import commit_open_batch, prefix_search
 from .store import RuntimeStore
+from .util import resolve_portable_path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -141,7 +142,8 @@ def create_app(runtime_dir: Path) -> FastAPI:
         elif kind in {"toc", "append", "manifest"} and book["exports"]:
             last = book["exports"][-1]
             key = {"toc": "toc_pdf", "append": "append_pdf"}.get(kind)
-            path = book_dir / (last[key] if key else f"exports/{last['batch_id']}/manifest.json")
+            stored_path = last[key] if key else f"exports/{last['batch_id']}/manifest.json"
+            path = resolve_portable_path(book_dir, stored_path)
         else:
             return JSONResponse({"error": "File not available"}, status_code=404)
         if not path.is_file() or book_dir not in path.resolve().parents:

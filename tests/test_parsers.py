@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from spellbook_builder.arkal import parse_class_page, parse_level_page, parse_spell_page
+from spellbook_builder.arkal import fetch_level_links, parse_class_page, parse_level_page, parse_spell_page, spell_id_from_url
 from spellbook_builder.srd import parse_monster_page, parse_summon_page, resolve_entry
 from spellbook_builder.tables import table_to_text
 
@@ -30,6 +30,47 @@ def test_class_level_discovery_and_spell_links():
     links = parse_level_page(fixture("arkal_level.html"), parsed["levels"][2])
     assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray"]
     assert links[0]["url"].startswith("https://dnd.arkalseif.info/spells/")
+
+
+class FixtureFetcher:
+    def __init__(self, pages: dict[str, str]):
+        self.pages = pages
+        self.requested: list[str] = []
+
+    def get(self, url: str) -> str:
+        self.requested.append(url)
+        return self.pages[url]
+
+
+def test_arkalseif_static_level_uses_complete_working_listing():
+    source = "https://dnd.arkalseif.info/classes/fixture-mage/spells-level-2/index.html"
+    complete = "https://dndtools.org/classes/fixture-mage/spells-level-2/?page_size=1000"
+    fetcher = FixtureFetcher({complete: fixture("arkal_level_complete.html")})
+    links = fetch_level_links(source, fetcher)
+    assert fetcher.requested == [complete]
+    assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray", "Storm Bolt"]
+    assert all(item["url"].startswith("https://dndtools.org/spells/") for item in links)
+
+
+def test_level_pagination_is_followed_and_deduplicated():
+    source = "https://example.test/classes/fixture-mage/spells-level-2/index.html"
+    first = source + "?page_size=1000"
+    second = source + "?page=2"
+    fetcher = FixtureFetcher(
+        {
+            first: fixture("arkal_level_page_1.html"),
+            second: fixture("arkal_level_page_2.html"),
+        }
+    )
+    links = fetch_level_links(source, fetcher)
+    assert fetcher.requested == [first, second]
+    assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray", "Storm Bolt"]
+
+
+def test_spell_ids_are_stable_across_static_and_dynamic_urls():
+    static = "https://dnd.arkalseif.info/spells/book--1/flame-orb--10/index.html"
+    dynamic = "https://dndtools.org/spells/book--1/flame-orb--10/"
+    assert spell_id_from_url(static, "Flame Orb") == spell_id_from_url(dynamic, "Flame Orb")
 
 
 def test_spell_page_is_refined_lossless_and_tables_are_text():

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from spellbook_builder.service import commit_open_batch, prefix_search, verify_append_only
+from spellbook_builder.service import commit_open_batch, prefix_search, render_full_spellbook, verify_append_only
 from spellbook_builder.store import RuntimeStore
 from spellbook_builder.util import sha256_file
 
@@ -69,3 +69,18 @@ def test_two_batch_append_only_toc_numbering_and_diff(tmp_path: Path):
     report = verify_append_only(store, book["id"])
     assert report["ok"], report["failures"]
     assert report["batches_checked"] == 2
+
+    # JSON paths are portable when written and legacy Windows separators remain
+    # readable after moving the whole runtime directory to Linux or macOS.
+    portable = store.get_spellbook(book["id"])
+    assert portable["batches"][0]["segment"] == "batches/batch-0001.pdf"
+    assert portable["exports"][-1]["append_pdf"] == "exports/batch-0002/append.pdf"
+    for batch in portable["batches"]:
+        batch["segment"] = batch["segment"].replace("/", "\\")
+    for export in portable["exports"]:
+        for key in ("toc_pdf", "append_pdf", "full_pdf"):
+            export[key] = export[key].replace("/", "\\")
+    store.update_spellbook(portable)
+    moved_full = render_full_spellbook(store, book["id"])
+    assert len(PdfReader(str(moved_full)).pages) >= 3
+    assert verify_append_only(store, book["id"])["ok"]

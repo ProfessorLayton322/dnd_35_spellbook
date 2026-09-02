@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup, Tag
 
@@ -13,6 +13,10 @@ from .util import clean_text, normalized_name, slugify, utc_now
 
 class ArkalParseError(ValueError):
     pass
+
+
+ARKALSEIF_STATIC_HOSTS = {"arkalseif.info", "dnd.arkalseif.info"}
+ARKALSEIF_DYNAMIC_HOST = "dndtools.org"
 
 
 def _content(html: str) -> Tag:
@@ -61,6 +65,88 @@ def parse_level_page(html: str, source_url: str) -> list[dict]:
                 links.append({"name": clean_text(link.get_text(" ")), "url": url})
     if not links:
         raise ArkalParseError(f"No spell links found on level page {source_url}")
+    return links
+
+
+def _complete_level_url(source_url: str) -> str:
+    """Return a listing URL that asks the live database for every level item.
+
+    Arkalseif's public class URLs are a static mirror.  Their pager links still
+    contain ``?page=N``, but the static host serves page one for every query.
+    Arkalseif links its working/filter version at dndtools.org, whose paths are
+    compatible after dropping the static ``index.html`` suffix.
+    """
+
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path
+    netloc = parsed.netloc
+    scheme = parsed.scheme
+    if host in ARKALSEIF_STATIC_HOSTS:
+        if path.endswith("/index.html"):
+            path = path[: -len("index.html")]
+        scheme = "https"
+        netloc = ARKALSEIF_DYNAMIC_HOST
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key not in {"page", "page_size"}]
+    query.append(("page_size", "1000"))
+    return urlunparse((scheme, netloc, path, parsed.params, urlencode(query), ""))
+
+
+def _level_total(html: str) -> int | None:
+    content = _content(html)
+    pagination = content.find(class_="pagination")
+    if pagination is None:
+        return None
+    match = re.search(r"\btotal\s+([\d,]+)\s+items?\b", clean_text(pagination.get_text(" ")), re.I)
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+def _pagination_urls(html: str, fetched_url: str) -> list[str]:
+    content = _content(html)
+    fetched = urlparse(fetched_url)
+    pages: dict[int, str] = {}
+    for link in content.select(".pagination a[href]"):
+        candidate = urljoin(fetched_url, str(link["href"]))
+        parsed = urlparse(candidate)
+        if parsed.scheme != fetched.scheme or parsed.netloc != fetched.netloc or parsed.path != fetched.path:
+            continue
+        values = parse_qs(parsed.query).get("page", [])
+        if len(values) == 1 and values[0].isdigit() and int(values[0]) > 1:
+            pages[int(values[0])] = candidate
+    return [pages[page] for page in sorted(pages)]
+
+
+def fetch_level_links(level_url: str, fetcher: Fetcher) -> list[dict]:
+    """Fetch and de-duplicate all spell links across a level listing."""
+
+    queue = [_complete_level_url(level_url)]
+    queued = set(queue)
+    visited: set[str] = set()
+    links: list[dict] = []
+    seen: set[str] = set()
+    expected_total: int | None = None
+    while queue:
+        page_url = queue.pop(0)
+        visited.add(page_url)
+        html = fetcher.get(page_url)
+        for link in parse_level_page(html, page_url):
+            if link["url"] not in seen:
+                seen.add(link["url"])
+                links.append(link)
+        page_total = _level_total(html)
+        if page_total is not None:
+            expected_total = page_total if expected_total is None else max(expected_total, page_total)
+        if expected_total is not None and len(links) >= expected_total:
+            break
+        for candidate in _pagination_urls(html, page_url):
+            if candidate not in visited and candidate not in queued:
+                queued.add(candidate)
+                queue.append(candidate)
+    if expected_total is not None and len(links) < expected_total:
+        raise ArkalParseError(
+            f"Spell-list pagination is incomplete for {level_url}: "
+            f"found {len(links)} of {expected_total} advertised items"
+        )
     return links
 
 
@@ -125,8 +211,12 @@ def _body_blocks(body: Tag | None) -> tuple[list[dict], list[str], list[dict]]:
 
 def spell_id_from_url(source_url: str, name: str) -> str:
     parts = [part for part in urlparse(source_url).path.split("/") if part]
-    if "spells" in parts and len(parts) >= 3:
-        return "arkal-" + slugify("--".join(parts[-3:-1]))
+    if "spells" in parts:
+        spell_parts = parts[parts.index("spells") + 1 :]
+        if spell_parts and spell_parts[-1].casefold() == "index.html":
+            spell_parts.pop()
+        if len(spell_parts) >= 2:
+            return "arkal-" + slugify("--".join(spell_parts[:2]))
     return "arkal-" + slugify(name)
 
 
@@ -217,7 +307,7 @@ def import_class(
     imported: dict[str, dict] = {}
     level_ids: dict[str, list[str]] = {}
     for level, level_url in class_info["levels"].items():
-        links = parse_level_page(fetcher.get(level_url), level_url)
+        links = fetch_level_links(level_url, fetcher)
         progress(f"{class_info['class_name']} level {level}: {len(links)} links")
         ids: list[str] = []
         for link in links:

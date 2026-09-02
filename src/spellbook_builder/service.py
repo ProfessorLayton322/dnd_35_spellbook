@@ -10,7 +10,7 @@ from pypdf import PdfReader
 
 from .pdfgen import RENDERER_VERSION, concatenate_pdfs, pdf_content_hashes, render_batch_segment, render_toc
 from .store import RuntimeStore
-from .util import atomic_json_write, normalized_name, sha256_file, utc_now
+from .util import atomic_json_write, normalized_name, portable_relative_path, resolve_portable_path, sha256_file, utc_now
 
 
 class ServiceError(RuntimeError):
@@ -128,7 +128,7 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
         "page_start": page_start,
         "page_end": page_start + page_count - 1,
         "page_count": page_count,
-        "segment": str(segment.relative_to(book_dir)),
+        "segment": portable_relative_path(segment, book_dir),
         "segment_sha256": sha256_file(segment),
         "renderer_version": RENDERER_VERSION,
     }
@@ -142,7 +142,7 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
     render_toc(toc_path, candidate["name"], all_toc_entries(candidate))
     _copy_atomic(segment, append_path)
     full_path = book_dir / "full.pdf"
-    segments = [book_dir / historical["segment"] for historical in candidate["batches"]]
+    segments = [resolve_portable_path(book_dir, historical["segment"]) for historical in candidate["batches"]]
     concatenate_pdfs(full_path, [toc_path, *segments])
     manifest = {
         "schema_version": 1,
@@ -150,9 +150,9 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
         "spellbook_id": spellbook_id,
         "batch_id": batch_id,
         "committed_at": committed_at,
-        "toc_pdf": str(toc_path.relative_to(book_dir)),
-        "append_pdf": str(append_path.relative_to(book_dir)),
-        "full_pdf": str(full_path.relative_to(book_dir)),
+        "toc_pdf": portable_relative_path(toc_path, book_dir),
+        "append_pdf": portable_relative_path(append_path, book_dir),
+        "full_pdf": portable_relative_path(full_path, book_dir),
         "logical_content_page_start": batch["page_start"],
         "logical_content_page_end": batch["page_end"],
         "new_page_count": page_count,
@@ -174,7 +174,7 @@ def render_full_spellbook(store: RuntimeStore, spellbook_id: str) -> Path:
     book_dir = store.spellbook_dir(spellbook_id)
     toc = book_dir / "current-toc.pdf"
     render_toc(toc, book["name"], all_toc_entries(book))
-    segments = [book_dir / batch["segment"] for batch in book["batches"]]
+    segments = [resolve_portable_path(book_dir, batch["segment"]) for batch in book["batches"]]
     full = book_dir / "full.pdf"
     concatenate_pdfs(full, [toc, *segments])
     return full
@@ -195,7 +195,7 @@ def verify_append_only(store: RuntimeStore, spellbook_id: str) -> dict:
     failures: list[str] = []
     offset = toc_pages
     for batch in book["batches"]:
-        segment = book_dir / batch["segment"]
+        segment = resolve_portable_path(book_dir, batch["segment"])
         segment_hashes = pdf_content_hashes(segment)
         if sha256_file(segment) != batch["segment_sha256"]:
             failures.append(f"{batch['id']}: immutable segment file hash changed")
