@@ -6,7 +6,7 @@ from urllib.parse import parse_qsl, parse_qs, urlencode, urljoin, urlparse, urlu
 
 from bs4 import BeautifulSoup, Tag
 
-from .fetch import Fetcher
+from .fetch import FetchError, Fetcher
 from .tables import table_to_text
 from .util import clean_text, normalized_name, slugify, utc_now
 
@@ -379,6 +379,8 @@ def import_class(
     level_ids: dict[str, list[str]] = {}
     completed_levels = 0
     downloaded_spells = 0
+    skipped_spells = 0
+    processed_spells = 0
     emit(
         {
             "type": "download_started",
@@ -386,18 +388,49 @@ def import_class(
             "completed_levels": completed_levels,
             "total_levels": total_levels,
             "downloaded_spells": downloaded_spells,
+            "skipped_spells": skipped_spells,
+            "processed_spells": processed_spells,
             "total_spells": discovered_spells,
         }
     )
     for level, links in level_links.items():
         ids: list[str] = []
         for link in links:
-            record = fetch_spell_record(link["url"], fetcher)
+            try:
+                record = fetch_spell_record(link["url"], fetcher)
+            except FetchError as exc:
+                if exc.status_code != 404:
+                    raise
+                skipped_spells += 1
+                processed_spells += 1
+                # The explicit processed count lets progress reach 100% even
+                # though a missing spell is deliberately not downloaded.
+                progress(f"skipped missing spell {link['name']} ({link['url']})")
+                emit(
+                    {
+                        "type": "spell_skipped",
+                        "class_name": class_info["class_name"],
+                        "level": level,
+                        "spell_name": link["name"],
+                        "completed_levels": completed_levels,
+                        "total_levels": total_levels,
+                        "downloaded_spells": downloaded_spells,
+                        "skipped_spells": skipped_spells,
+                        "processed_spells": processed_spells,
+                        "total_spells": discovered_spells,
+                        "reason": "404 Not Found",
+                    }
+                )
+                continue
             membership = {"class_name": class_info["class_name"], "spell_level": level}
-            record["imported_from_classes"] = [membership]
+            previous = imported.get(record["id"], {}).get("imported_from_classes", [])
+            record["imported_from_classes"] = list(
+                {(item["class_name"], item["spell_level"]): item for item in [*previous, membership]}.values()
+            )
             imported[record["id"]] = record
             ids.append(record["id"])
             downloaded_spells += 1
+            processed_spells += 1
             emit(
                 {
                     "type": "spell_downloaded",
@@ -407,6 +440,8 @@ def import_class(
                     "completed_levels": completed_levels,
                     "total_levels": total_levels,
                     "downloaded_spells": downloaded_spells,
+                    "skipped_spells": skipped_spells,
+                    "processed_spells": processed_spells,
                     "total_spells": discovered_spells,
                 }
             )
@@ -421,6 +456,8 @@ def import_class(
                 "completed_levels": completed_levels,
                 "total_levels": total_levels,
                 "downloaded_spells": downloaded_spells,
+                "skipped_spells": skipped_spells,
+                "processed_spells": processed_spells,
                 "total_spells": discovered_spells,
             }
         )

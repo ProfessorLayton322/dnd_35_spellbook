@@ -23,12 +23,15 @@ def _fetcher(args) -> Fetcher:
 
 def cmd_import_class(args) -> int:
     store = _store(args)
-    class_record, spells = import_class(args.url, _fetcher(args), print)
+    latest_progress: dict = {}
+    class_record, spells = import_class(args.url, _fetcher(args), print, latest_progress.update)
     store.merge_class_import(class_record, spells)
     print(f"Imported {class_record['class_name']}")
     for level, ids in sorted(class_record["levels"].items(), key=lambda pair: int(pair[0])):
         print(f"  level {level}: {len(ids)} spells")
     print(f"  unique records in import: {len(spells)}")
+    if latest_progress.get("skipped_spells"):
+        print(f"  missing spell pages skipped: {latest_progress['skipped_spells']}")
     return 0
 
 

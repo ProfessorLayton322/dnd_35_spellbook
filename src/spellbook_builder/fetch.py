@@ -9,7 +9,9 @@ from urllib3.util.retry import Retry
 
 
 class FetchError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass
@@ -45,7 +47,8 @@ class Fetcher:
             self._last_fetch = time.monotonic()
             response.raise_for_status()
         except requests.RequestException as exc:
-            raise FetchError(f"Could not fetch {url}: {exc}") from exc
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise FetchError(f"Could not fetch {url}: {exc}", status_code=status_code) from exc
         if not response.content:
             raise FetchError(f"Remote page was empty: {url}")
         response.encoding = response.apparent_encoding or response.encoding or "utf-8"

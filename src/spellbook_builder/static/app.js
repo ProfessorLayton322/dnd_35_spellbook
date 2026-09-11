@@ -9,6 +9,7 @@
     const bar = document.querySelector('#import-progress-bar');
     const levels = document.querySelector('#completed-levels');
     const spells = document.querySelector('#downloaded-spells');
+    const skipped = document.querySelector('#skipped-spells');
     const status = document.querySelector('#import-progress-status');
     const flashes = document.querySelector('#flash-messages');
 
@@ -23,12 +24,15 @@
       const completedLevels = event.completed_levels ?? 0;
       const totalLevels = event.total_levels ?? 0;
       const downloadedSpells = event.downloaded_spells ?? 0;
+      const skippedSpells = event.skipped_spells ?? 0;
+      const processedSpells = event.processed_spells ?? (downloadedSpells + skippedSpells);
       const totalSpells = event.total_spells;
       levels.textContent = `${completedLevels} / ${totalLevels || '—'}`;
       spells.textContent = `${downloadedSpells} / ${totalSpells ?? '—'}`;
+      skipped.textContent = String(skippedSpells);
 
       if (totalSpells > 0) {
-        const ratio = Math.max(0, Math.min(1, downloadedSpells / totalSpells));
+        const ratio = Math.max(0, Math.min(1, processedSpells / totalSpells));
         bar.value = ratio;
         bar.textContent = `${Math.round(ratio * 100)}%`;
         percent.textContent = `${Math.round(ratio * 100)}%`;
@@ -44,6 +48,7 @@
       if (event.type === 'level_scanned') status.textContent = `Level ${event.level}: found ${event.spells_in_level} spells.`;
       if (event.type === 'download_started') status.textContent = `Spell lists scanned. Downloading ${totalSpells} spells…`;
       if (event.type === 'spell_downloaded') status.textContent = `Level ${event.level}: downloaded ${event.spell_name}.`;
+      if (event.type === 'spell_skipped') status.textContent = `Level ${event.level}: skipped missing spell ${event.spell_name} (404).`;
       if (event.type === 'level_completed') status.textContent = `Completed level ${event.level} (${event.spells_in_level} spells).`;
     };
 
@@ -57,6 +62,7 @@
       bar.value = 0;
       levels.textContent = '0 / —';
       spells.textContent = '0 / —';
+      skipped.textContent = '0';
       status.textContent = 'Connecting to the spell database…';
       flashes.replaceChildren();
 
@@ -96,7 +102,8 @@
         bar.textContent = '100%';
         percent.textContent = '100%';
         title.textContent = `${doneEvent.class_name} imported`;
-        status.textContent = `${doneEvent.unique_spells} unique spells saved. Refreshing…`;
+        const skippedSummary = doneEvent.skipped_spells ? `; ${doneEvent.skipped_spells} missing skipped` : '';
+        status.textContent = `${doneEvent.unique_spells} unique spells saved${skippedSummary}. Refreshing…`;
         progressPanel.classList.add('complete');
         window.setTimeout(() => window.location.assign(doneEvent.redirect), 700);
       } catch (error) {

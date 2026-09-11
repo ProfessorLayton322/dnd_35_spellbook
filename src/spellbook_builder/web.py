@@ -71,10 +71,13 @@ def create_app(runtime_dir: Path) -> FastAPI:
     def import_class_route(url: str = Form(...)):
         try:
             _validate_class_url(url)
-            class_record, spells = import_class(url, Fetcher())
+            latest_progress: dict = {}
+            class_record, spells = import_class(url, Fetcher(), on_event=latest_progress.update)
             app.state.store.merge_class_import(class_record, spells)
             counts = ", ".join(f"L{level}: {len(ids)}" for level, ids in class_record["levels"].items())
-            return redirect(message=f"Imported {class_record['class_name']} ({counts})")
+            skipped = latest_progress.get("skipped_spells", 0)
+            skipped_note = f"; skipped {skipped} missing spell pages" if skipped else ""
+            return redirect(message=f"Imported {class_record['class_name']} ({counts}){skipped_note}")
         except Exception as exc:
             return redirect(error=str(exc))
 
@@ -98,9 +101,12 @@ def create_app(runtime_dir: Path) -> FastAPI:
                 class_record, spells = import_class(url, Fetcher(), on_event=publish)
                 app.state.store.merge_class_import(class_record, spells)
                 counts = ", ".join(f"L{level}: {len(ids)}" for level, ids in class_record["levels"].items())
-                message = f"Imported {class_record['class_name']} ({counts})"
                 downloaded_spells = latest_progress.get("downloaded_spells", 0)
+                skipped_spells = latest_progress.get("skipped_spells", 0)
+                processed_spells = latest_progress.get("processed_spells", downloaded_spells + skipped_spells)
                 total_spells = latest_progress.get("total_spells", downloaded_spells)
+                skipped_note = f"; skipped {skipped_spells} missing spell pages" if skipped_spells else ""
+                message = f"Imported {class_record['class_name']} ({counts}){skipped_note}"
                 events.put(
                     {
                         "type": "done",
@@ -108,6 +114,8 @@ def create_app(runtime_dir: Path) -> FastAPI:
                         "completed_levels": len(class_record["levels"]),
                         "total_levels": len(class_record["levels"]),
                         "downloaded_spells": downloaded_spells,
+                        "skipped_spells": skipped_spells,
+                        "processed_spells": processed_spells,
                         "total_spells": total_spells,
                         "unique_spells": len(spells),
                         "message": message,

@@ -18,8 +18,10 @@ class RuntimeStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.indexes.mkdir(parents=True, exist_ok=True)
         self.spellbooks_dir.mkdir(parents=True, exist_ok=True)
+        self._remove_stale_atomic_files()
         if not self.state_path.exists():
             self.save_state(self.empty_state())
+        self.cleanup_incomplete_imports()
 
     @property
     def state_path(self) -> Path:
@@ -48,19 +50,123 @@ class RuntimeStore:
     def save_spells(self, records: dict[str, dict]) -> None:
         atomic_json_write(self.indexes / "spells.json", {"schema_version": 1, "updated_at": utc_now(), "records": records})
 
-    def merge_class_import(self, class_record: dict, new_spells: dict[str, dict]) -> None:
+    def _remove_stale_atomic_files(self) -> None:
+        """Remove temporary writes left behind if an older process was killed."""
+
+        for directory, name in ((self.root, "state.json"), (self.indexes, "spells.json")):
+            for path in directory.glob(f".{name}.*.tmp"):
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _spellbook_spell_ids(state: dict) -> set[str]:
+        referenced: set[str] = set()
+        for book in state.get("spellbooks", {}).values():
+            batches = list(book.get("batches", []))
+            if book.get("open_batch"):
+                batches.append(book["open_batch"])
+            for batch in batches:
+                referenced.update(
+                    entity["id"]
+                    for entity in batch.get("entities", [])
+                    if entity.get("kind") == "spell" and entity.get("id")
+                )
+        return referenced
+
+    @classmethod
+    def _reconcile_spells(cls, state: dict, spells: dict[str, dict]) -> tuple[dict[str, dict], int, bool]:
+        """Drop records and memberships not backed by a completed import.
+
+        Class records in state are the commit marker for an import. Records
+        without import membership are retained because they may come from a
+        future or manually managed source. Spellbook references are retained so
+        an open batch never loses data and historical IDs remain inspectable.
+        """
+
+        completed_refs: set[tuple[str, str, str]] = set()
+        completed_spell_ids: set[str] = set()
+        for class_name, class_record in state.get("imported_classes", {}).items():
+            for level, spell_ids in class_record.get("levels", {}).items():
+                for spell_id in spell_ids:
+                    completed_refs.add((class_name, str(level), spell_id))
+                    completed_spell_ids.add(spell_id)
+
+        protected_ids = completed_spell_ids | cls._spellbook_spell_ids(state)
+        reconciled: dict[str, dict] = {}
+        removed = 0
+        changed = False
+        for spell_id, source_record in spells.items():
+            memberships = source_record.get("imported_from_classes", [])
+            valid_memberships = [
+                membership
+                for membership in memberships
+                if (
+                    membership.get("class_name"),
+                    str(membership.get("spell_level")),
+                    spell_id,
+                )
+                in completed_refs
+            ]
+            if memberships and not valid_memberships and spell_id not in protected_ids:
+                removed += 1
+                changed = True
+                continue
+            if valid_memberships != memberships:
+                record = deepcopy(source_record)
+                record["imported_from_classes"] = valid_memberships
+                reconciled[spell_id] = record
+                changed = True
+            else:
+                reconciled[spell_id] = source_record
+        return reconciled, removed, changed
+
+    def cleanup_incomplete_imports(self) -> int:
+        """Reclaim records left by imports that never committed to state."""
+
+        spells_path = self.indexes / "spells.json"
+        if not spells_path.exists():
+            return 0
+        state = self.load_state()
         spells = self.load_spells()
+        reconciled, removed, changed = self._reconcile_spells(state, spells)
+        if changed:
+            self.save_spells(reconciled)
+            state.setdefault("index_metadata", {})["spells"] = {
+                "record_count": len(reconciled),
+                "updated_at": utc_now(),
+            }
+            self.save_state(state)
+        return removed
+
+    def merge_class_import(self, class_record: dict, new_spells: dict[str, dict]) -> None:
+        previous_spells = self.load_spells()
+        spells = deepcopy(previous_spells)
         for spell_id, incoming in new_spells.items():
+            incoming = deepcopy(incoming)
             existing = spells.get(spell_id)
             if existing:
                 memberships = existing.get("imported_from_classes", []) + incoming.get("imported_from_classes", [])
                 incoming["imported_from_classes"] = list({(m["class_name"], m["spell_level"]): m for m in memberships}.values())
             spells[spell_id] = incoming
-        self.save_spells(spells)
         state = self.load_state()
         state["imported_classes"][class_record["class_name"]] = class_record
-        state["index_metadata"]["spells"] = {"record_count": len(spells), "updated_at": utc_now()}
-        self.save_state(state)
+        spells, _removed, _changed = self._reconcile_spells(state, spells)
+        state.setdefault("index_metadata", {})["spells"] = {
+            "record_count": len(spells),
+            "updated_at": utc_now(),
+        }
+        try:
+            self.save_spells(spells)
+            self.save_state(state)
+        except BaseException:
+            # Keep the pre-import index if the second half of the commit fails.
+            # A hard process kill is repaired by cleanup_incomplete_imports on
+            # the next startup.
+            try:
+                self.save_spells(previous_spells)
+            except Exception:
+                pass
+            raise
 
     def save_summon_indexes(self, lists: dict, monsters: dict, metadata: dict) -> None:
         atomic_json_write(self.indexes / "summon_lists.json", {"schema_version": 1, "records": lists})

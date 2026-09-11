@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from spellbook_builder.arkal import fetch_level_links, fetch_spell_record, import_class, parse_class_page, parse_level_page, parse_spell_page, spell_id_from_url
+from spellbook_builder.fetch import FetchError
 from spellbook_builder.srd import parse_monster_page, parse_summon_page, resolve_entry
 from spellbook_builder.tables import table_to_text
 
@@ -39,7 +42,10 @@ class FixtureFetcher:
 
     def get(self, url: str) -> str:
         self.requested.append(url)
-        return self.pages[url]
+        result = self.pages[url]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def test_arkalseif_static_level_uses_complete_working_listing():
@@ -123,6 +129,47 @@ def test_class_import_reports_spell_and_completed_level_progress():
     assert [event["downloaded_spells"] for event in downloads] == list(range(1, 7))
     assert [event["completed_levels"] for event in completions] == [1, 2]
     assert completions[-1]["total_spells"] == 6
+
+
+def test_class_import_skips_only_missing_spell_pages():
+    root = "https://dnd.arkalseif.info/classes/fixture-mage/index.html"
+    level_urls = [
+        f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000"
+        for level in (0, 2)
+    ]
+    spell_urls = {
+        slug: f"https://dndtools.org/spells/book--1/{slug}--{number}/"
+        for slug, number in (("flame-orb", 10), ("frost-ray", 11), ("storm-bolt", 12))
+    }
+    pages = {root: fixture("arkal_class.html")}
+    pages.update({url: fixture("arkal_level_complete.html") for url in level_urls})
+    pages[spell_urls["flame-orb"]] = fixture("flaming_sphere.html")
+    pages[spell_urls["frost-ray"]] = FetchError("missing", status_code=404)
+    pages[spell_urls["storm-bolt"]] = fixture("flaming_sphere.html")
+    events: list[dict] = []
+
+    class_record, spells = import_class(root, FixtureFetcher(pages), on_event=events.append)
+
+    assert all(len(ids) == 2 for ids in class_record["levels"].values())
+    assert len(spells) == 2
+    skipped = [event for event in events if event["type"] == "spell_skipped"]
+    assert len(skipped) == 2
+    assert skipped[-1]["skipped_spells"] == 2
+    assert events[-1]["processed_spells"] == events[-1]["total_spells"] == 6
+
+
+def test_class_import_does_not_skip_non_404_fetch_errors():
+    root = "https://dnd.arkalseif.info/classes/fixture-mage/index.html"
+    level_urls = [
+        f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000"
+        for level in (0, 2)
+    ]
+    first_spell = "https://dndtools.org/spells/book--1/flame-orb--10/"
+    pages = {root: fixture("arkal_class.html"), first_spell: FetchError("unavailable", status_code=503)}
+    pages.update({url: fixture("arkal_level_complete.html") for url in level_urls})
+
+    with pytest.raises(FetchError, match="unavailable"):
+        import_class(root, FixtureFetcher(pages))
 
 
 def test_spell_page_is_refined_lossless_and_tables_are_text():
