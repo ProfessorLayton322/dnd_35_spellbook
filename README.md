@@ -57,7 +57,7 @@ Paste an Arkalself class URL into the UI, or run:
 
 Class import discovers every linked level rather than assuming levels 0–9, follows each level's spell table, fetches every spell, and merges stable URL-derived IDs on re-import. Global spell class/level mappings and the imported class-list membership are separate.
 
-The `dnd.arkalseif.info` pages are a static mirror: their visible `?page=N` links currently return page 1 again. For level listings and spell content, the importer automatically uses Arkalseif's linked working/filter database at `dndtools.org` and requests up to 1,000 rows. If a listing is still paginated, every same-list page is followed and de-duplicated. The advertised total is checked so a partial import fails explicitly instead of silently stopping at 20 spells. URL-derived IDs are identical for the static and working URL forms, so re-importing does not replace existing spell identities.
+The `dnd.arkalseif.info` pages are a static mirror: their visible `?page=N` links currently return page 1 again. For level listings and spell content, the importer automatically uses Arkalseif's linked working/filter database at `dndtools.org` and requests up to 1,000 rows. If a live spell record is incomplete, its complete static-mirror page is used instead. If a listing is still paginated, every same-list page is followed and de-duplicated. The advertised total is checked so a partial import fails explicitly instead of silently stopping at 20 spells. URL-derived IDs are identical for the static and working URL forms, so re-importing does not replace existing spell identities.
 
 The summon build reads all Summon Monster I–IX and Summon Nature's Ally I–IX tables. It prefers linked monster pages and anchors, then resolves named statblock columns deterministically. Qualified `(any)` entries intentionally expand to all applicable variants. An unresolved entry is written to `summon_validation.json` and makes the command fail.
 
@@ -158,7 +158,7 @@ These counts are observations, not hard-coded expectations. Remote content can c
 - A semantic markup change may produce an explicit “heading/table/content region not found” failure. Add a compact regression fixture before adjusting the parser.
 - Rebuilding an index updates canonical records but never rewrites committed PDFs. Begin a new batch to print revised canonical content.
 - Where d20srd supplies a celestial/fiendish column, resolution selects it. If the linked SRD page supplies only the base statblock, the exact summon display/template remains in metadata and the resolution report says that the base SRD statblock was used.
-- Imports run synchronously in the local server process. The page waits during large class imports; the CLI gives clearer progress for those jobs.
+- Browser class imports stream live counts for scanned and completed spell levels and downloaded spells. Keep the page open until the import is saved; the CLI prints each discovered level list.
 - Core PDF fonts are deliberately used for reproducible local rendering. The supported source punctuation is preserved, but this is a utilitarian layout rather than a typography system.
 
 Do not commit `runtime/`, virtual environments, generated PDFs/indexes, or scraped source data. `.gitignore` covers the standard paths.

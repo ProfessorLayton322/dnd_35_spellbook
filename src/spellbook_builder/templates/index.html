@@ -9,15 +9,29 @@
 <body>
 <main>
   <h1>D&D 3.5 Spellbook Builder</h1>
-  {% if message %}<p class="notice">{{ message }}</p>{% endif %}
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <div id="flash-messages" aria-live="polite">
+    {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  </div>
 
   <section>
     <h2>Data</h2>
-    <form action="/import-class" method="post" class="row">
+    <form id="class-import-form" action="/import-class" data-progress-action="/api/import-class" method="post" class="row">
       <label>Arkalself class URL <input name="url" type="url" required placeholder="https://dnd.arkalseif.info/classes/warmage/index.html"></label>
       <button>Import class</button>
     </form>
+    <div id="class-import-progress" class="import-progress" aria-live="polite" hidden>
+      <div class="progress-heading">
+        <strong id="import-progress-title">Importing class</strong>
+        <span id="import-progress-percent">0%</span>
+      </div>
+      <progress id="import-progress-bar" value="0" max="1">0%</progress>
+      <div class="progress-counts">
+        <span><strong id="completed-levels">0 / 0</strong> spell levels completed</span>
+        <span><strong id="downloaded-spells">0 / —</strong> spells downloaded</span>
+      </div>
+      <p id="import-progress-status" class="muted">Starting import…</p>
+    </div>
     {% if state.imported_classes %}
       <ul>{% for name, item in state.imported_classes|dictsort %}<li><b>{{ name }}</b>: {% for level, ids in item.levels|dictsort %}L{{ level }}={{ ids|length }}{% if not loop.last %}, {% endif %}{% endfor %}</li>{% endfor %}</ul>
     {% else %}<p class="muted">No classes imported yet. The CLI also provides <code>build-summon-index</code>.</p>{% endif %}

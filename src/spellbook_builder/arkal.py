@@ -220,6 +220,18 @@ def spell_id_from_url(source_url: str, name: str) -> str:
     return "arkal-" + slugify(name)
 
 
+def _static_spell_url(source_url: str) -> str | None:
+    """Return the equivalent static-mirror URL for a live spell page."""
+
+    parsed = urlparse(source_url)
+    if (parsed.hostname or "").casefold() != ARKALSEIF_DYNAMIC_HOST:
+        return None
+    path = parsed.path.rstrip("/")
+    if not path.startswith("/spells/"):
+        return None
+    return urlunparse(("https", "dnd.arkalseif.info", f"{path}/index.html", "", "", ""))
+
+
 def parse_spell_page(html: str, source_url: str, fetched_at: str | None = None) -> dict:
     content = _content(html)
     heading = content.find("h2")
@@ -297,26 +309,121 @@ def parse_spell_page(html: str, source_url: str, fetched_at: str | None = None) 
     return record
 
 
+def fetch_spell_record(source_url: str, fetcher: Fetcher) -> dict:
+    """Fetch a spell, recovering incomplete live records from the static mirror."""
+
+    html = fetcher.get(source_url)
+    try:
+        return parse_spell_page(html, source_url)
+    except ArkalParseError:
+        mirror_url = _static_spell_url(source_url)
+        if mirror_url is None:
+            raise
+        return parse_spell_page(fetcher.get(mirror_url), mirror_url)
+
+
 def import_class(
     class_url: str,
     fetcher: Fetcher,
     on_progress: Callable[[str], None] | None = None,
+    on_event: Callable[[dict], None] | None = None,
 ) -> tuple[dict, dict[str, dict]]:
     progress = on_progress or (lambda _message: None)
+    emit = on_event or (lambda _event: None)
     class_info = parse_class_page(fetcher.get(class_url), class_url)
+    total_levels = len(class_info["levels"])
+    emit(
+        {
+            "type": "class_discovered",
+            "class_name": class_info["class_name"],
+            "completed_levels": 0,
+            "total_levels": total_levels,
+            "downloaded_spells": 0,
+            "total_spells": None,
+        }
+    )
+
+    level_links: dict[int, list[dict]] = {}
+    discovered_spells = 0
+    for level, level_url in class_info["levels"].items():
+        emit(
+            {
+                "type": "level_scan_started",
+                "class_name": class_info["class_name"],
+                "level": level,
+                "completed_levels": 0,
+                "total_levels": total_levels,
+                "downloaded_spells": 0,
+                "total_spells": None,
+            }
+        )
+        links = fetch_level_links(level_url, fetcher)
+        level_links[level] = links
+        discovered_spells += len(links)
+        progress(f"{class_info['class_name']} level {level}: {len(links)} links")
+        emit(
+            {
+                "type": "level_scanned",
+                "class_name": class_info["class_name"],
+                "level": level,
+                "spells_in_level": len(links),
+                "completed_levels": 0,
+                "total_levels": total_levels,
+                "downloaded_spells": 0,
+                "total_spells": None,
+                "discovered_spells": discovered_spells,
+            }
+        )
+
     imported: dict[str, dict] = {}
     level_ids: dict[str, list[str]] = {}
-    for level, level_url in class_info["levels"].items():
-        links = fetch_level_links(level_url, fetcher)
-        progress(f"{class_info['class_name']} level {level}: {len(links)} links")
+    completed_levels = 0
+    downloaded_spells = 0
+    emit(
+        {
+            "type": "download_started",
+            "class_name": class_info["class_name"],
+            "completed_levels": completed_levels,
+            "total_levels": total_levels,
+            "downloaded_spells": downloaded_spells,
+            "total_spells": discovered_spells,
+        }
+    )
+    for level, links in level_links.items():
         ids: list[str] = []
         for link in links:
-            record = parse_spell_page(fetcher.get(link["url"]), link["url"])
+            record = fetch_spell_record(link["url"], fetcher)
             membership = {"class_name": class_info["class_name"], "spell_level": level}
             record["imported_from_classes"] = [membership]
             imported[record["id"]] = record
             ids.append(record["id"])
+            downloaded_spells += 1
+            emit(
+                {
+                    "type": "spell_downloaded",
+                    "class_name": class_info["class_name"],
+                    "level": level,
+                    "spell_name": record["name"],
+                    "completed_levels": completed_levels,
+                    "total_levels": total_levels,
+                    "downloaded_spells": downloaded_spells,
+                    "total_spells": discovered_spells,
+                }
+            )
         level_ids[str(level)] = list(dict.fromkeys(ids))
+        completed_levels += 1
+        emit(
+            {
+                "type": "level_completed",
+                "class_name": class_info["class_name"],
+                "level": level,
+                "spells_in_level": len(level_ids[str(level)]),
+                "completed_levels": completed_levels,
+                "total_levels": total_levels,
+                "downloaded_spells": downloaded_spells,
+                "total_spells": discovered_spells,
+            }
+        )
     result = {
         "schema_version": 1,
         "class_name": class_info["class_name"],

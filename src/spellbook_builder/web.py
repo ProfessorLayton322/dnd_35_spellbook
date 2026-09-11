@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 from urllib.parse import quote
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -17,6 +21,12 @@ from .util import resolve_portable_path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
+
+
+def _validate_class_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname != "dnd.arkalseif.info":
+        raise ValueError("Enter a dnd.arkalseif.info class URL")
 
 
 def create_app(runtime_dir: Path) -> FastAPI:
@@ -60,15 +70,69 @@ def create_app(runtime_dir: Path) -> FastAPI:
     @app.post("/import-class")
     def import_class_route(url: str = Form(...)):
         try:
-            parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or parsed.hostname != "dnd.arkalseif.info":
-                raise ValueError("Enter a dnd.arkalseif.info class URL")
+            _validate_class_url(url)
             class_record, spells = import_class(url, Fetcher())
             app.state.store.merge_class_import(class_record, spells)
             counts = ", ".join(f"L{level}: {len(ids)}" for level, ids in class_record["levels"].items())
             return redirect(message=f"Imported {class_record['class_name']} ({counts})")
         except Exception as exc:
             return redirect(error=str(exc))
+
+    @app.post("/api/import-class")
+    def import_class_stream_route(url: str = Form(...)):
+        try:
+            _validate_class_url(url)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        events: Queue[dict | None] = Queue()
+
+        def run_import() -> None:
+            latest_progress: dict = {}
+
+            def publish(event: dict) -> None:
+                latest_progress.update(event)
+                events.put(event)
+
+            try:
+                class_record, spells = import_class(url, Fetcher(), on_event=publish)
+                app.state.store.merge_class_import(class_record, spells)
+                counts = ", ".join(f"L{level}: {len(ids)}" for level, ids in class_record["levels"].items())
+                message = f"Imported {class_record['class_name']} ({counts})"
+                downloaded_spells = latest_progress.get("downloaded_spells", 0)
+                total_spells = latest_progress.get("total_spells", downloaded_spells)
+                events.put(
+                    {
+                        "type": "done",
+                        "class_name": class_record["class_name"],
+                        "completed_levels": len(class_record["levels"]),
+                        "total_levels": len(class_record["levels"]),
+                        "downloaded_spells": downloaded_spells,
+                        "total_spells": total_spells,
+                        "unique_spells": len(spells),
+                        "message": message,
+                        "redirect": "/?message=" + quote(message),
+                    }
+                )
+            except Exception as exc:
+                events.put({"type": "error", "message": str(exc)})
+            finally:
+                events.put(None)
+
+        Thread(target=run_import, name="class-import", daemon=True).start()
+
+        def stream_events() -> Iterator[str]:
+            while True:
+                event = events.get()
+                if event is None:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(
+            stream_events(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/spellbooks")
     def create_spellbook_route(name: str = Form(...)):

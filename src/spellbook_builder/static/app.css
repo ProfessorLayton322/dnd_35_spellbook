@@ -19,3 +19,12 @@ nav a.selected { background: #26364a; color: white; }
 .small { font-size: .75rem; padding: .1rem .3rem; }
 .autocomplete select { min-width: 300px; }
 code { background: #eee; padding: .1rem .25rem; }
+.import-progress { margin: 1rem 0; padding: .85rem 1rem; border: 1px solid #b8c5d3; border-radius: 5px; background: #f5f8fb; }
+.import-progress[hidden] { display: none; }
+.progress-heading, .progress-counts { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.progress-heading { margin-bottom: .55rem; }
+.progress-counts { margin-top: .45rem; font-size: .9rem; }
+.import-progress progress { display: block; width: 100%; height: .8rem; accent-color: #2f6e49; }
+.import-progress .muted { margin: .55rem 0 0; }
+.import-progress.complete { border-color: #6aab70; background: #f0f8f1; }
+.import-progress.failed { border-color: #c86b62; background: #fdf3f2; }

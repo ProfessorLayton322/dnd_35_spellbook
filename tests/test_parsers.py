@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from spellbook_builder.arkal import fetch_level_links, parse_class_page, parse_level_page, parse_spell_page, spell_id_from_url
+from spellbook_builder.arkal import fetch_level_links, fetch_spell_record, import_class, parse_class_page, parse_level_page, parse_spell_page, spell_id_from_url
 from spellbook_builder.srd import parse_monster_page, parse_summon_page, resolve_entry
 from spellbook_builder.tables import table_to_text
 
@@ -71,6 +71,58 @@ def test_spell_ids_are_stable_across_static_and_dynamic_urls():
     static = "https://dnd.arkalseif.info/spells/book--1/flame-orb--10/index.html"
     dynamic = "https://dndtools.org/spells/book--1/flame-orb--10/"
     assert spell_id_from_url(static, "Flame Orb") == spell_id_from_url(dynamic, "Flame Orb")
+
+
+def test_incomplete_working_spell_falls_back_to_static_mirror():
+    dynamic = "https://dndtools.org/spells/players-handbook-v35--6/detect-magic--2489/"
+    static = "https://dnd.arkalseif.info/spells/players-handbook-v35--6/detect-magic--2489/index.html"
+    fetcher = FixtureFetcher(
+        {
+            dynamic: fixture("detect_magic_incomplete.html"),
+            static: fixture("detect_magic_complete.html"),
+        }
+    )
+
+    record = fetch_spell_record(dynamic, fetcher)
+
+    assert fetcher.requested == [dynamic, static]
+    assert record["id"] == "arkal-players-handbook-v35-6-detect-magic-2489"
+    assert record["source_url"] == static
+    assert record["content_blocks"][0]["text"].startswith("You detect magical auras")
+
+
+def test_class_import_reports_spell_and_completed_level_progress():
+    root = "https://dnd.arkalseif.info/classes/fixture-mage/index.html"
+    level_urls = [
+        f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000"
+        for level in (0, 2)
+    ]
+    spell_urls = [
+        f"https://dndtools.org/spells/book--1/{slug}--{number}/"
+        for slug, number in (("flame-orb", 10), ("frost-ray", 11), ("storm-bolt", 12))
+    ]
+    pages = {root: fixture("arkal_class.html")}
+    pages.update({url: fixture("arkal_level_complete.html") for url in level_urls})
+    pages.update({url: fixture("flaming_sphere.html") for url in spell_urls})
+    events: list[dict] = []
+
+    class_record, spells = import_class(root, FixtureFetcher(pages), on_event=events.append)
+
+    assert list(class_record["levels"]) == ["0", "2"]
+    assert len(spells) == 3
+    assert events[0] == {
+        "type": "class_discovered",
+        "class_name": "Fixture Mage",
+        "completed_levels": 0,
+        "total_levels": 2,
+        "downloaded_spells": 0,
+        "total_spells": None,
+    }
+    downloads = [event for event in events if event["type"] == "spell_downloaded"]
+    completions = [event for event in events if event["type"] == "level_completed"]
+    assert [event["downloaded_spells"] for event in downloads] == list(range(1, 7))
+    assert [event["completed_levels"] for event in completions] == [1, 2]
+    assert completions[-1]["total_spells"] == 6
 
 
 def test_spell_page_is_refined_lossless_and_tables_are_text():
