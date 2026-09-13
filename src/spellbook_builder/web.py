@@ -296,7 +296,8 @@ def create_app(runtime_dir: Path) -> FastAPI:
             label = f"{last['batch_id']} {EXPORT_LABELS[kind]}"
         else:
             return JSONResponse({"error": "File not available"}, status_code=404)
-        if not path.is_file() or book_dir not in path.resolve().parents:
+        # Resolve both sides: Android's runtime path runs through the /data/user/0 -> /data/data symlink.
+        if not path.is_file() or book_dir.resolve() not in path.resolve().parents:
             return JSONResponse({"error": "File not available"}, status_code=404)
         # Inline keeps browsers showing the file; the name is used when it is saved.
         return FileResponse(path, filename=_export_filename(book["name"], label, path.suffix), content_disposition_type="inline")

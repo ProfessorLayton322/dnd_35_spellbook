@@ -2,6 +2,7 @@ import asyncio
 import json
 from urllib.parse import quote, unquote
 
+import pytest
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
@@ -140,6 +141,30 @@ def test_export_files_open_inline_with_descriptive_names(tmp_path):
     assert disposition("toc") == "inline; filename*=utf-8''" + quote("Fire-Ice Grimoire - batch-0001 table of contents.pdf")
     assert disposition("append") == "inline; filename*=utf-8''" + quote("Fire-Ice Grimoire - batch-0001 new pages.pdf")
     assert disposition("manifest") == "inline; filename*=utf-8''" + quote("Fire-Ice Grimoire - batch-0001 manifest.json")
+
+
+def test_export_files_are_served_from_a_runtime_path_through_a_symlink(tmp_path):
+    # Android's files directory is /data/user/0/<package>/files, and /data/user/0 links to /data/data.
+    (tmp_path / "data").mkdir()
+    try:
+        (tmp_path / "user").symlink_to(tmp_path / "data", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    app = web.create_app(tmp_path / "user" / "runtime")
+    store = app.state.store
+    store.save_spells({"magic-missile": spell("magic-missile", "Magic Missile")})
+    book = store.create_spellbook("Grimoire")
+    store.begin_batch(book["id"])
+    store.add_open_entity(book["id"], {"kind": "spell", "id": "magic-missile"})
+    commit_open_batch(store, book["id"])
+    files = route_endpoint(app, "/spellbooks/{book_id}/files/{kind}")
+
+    assert {kind: files(book_id=book["id"], kind=kind).status_code for kind in ("full", "toc", "append", "manifest")} == {
+        "full": 200,
+        "toc": 200,
+        "append": 200,
+        "manifest": 200,
+    }
 
 
 def fake_summon_build(unresolved: list[dict]):
