@@ -17,6 +17,9 @@ class ArkalParseError(ValueError):
 
 ARKALSEIF_STATIC_HOSTS = {"arkalseif.info", "dnd.arkalseif.info"}
 ARKALSEIF_DYNAMIC_HOST = "dndtools.org"
+# A spell reprinted in several rulebooks keeps the 3.5 core printing, then the
+# Spell Compendium update, over any other printing.
+PREFERRED_SOURCE_BOOKS = ("Player's Handbook v.3.5", "Spell Compendium")
 
 
 def _content(html: str) -> Tag:
@@ -209,15 +212,53 @@ def _body_blocks(body: Tag | None) -> tuple[list[dict], list[str], list[dict]]:
     return blocks, tables, sections
 
 
-def spell_id_from_url(source_url: str, name: str) -> str:
-    parts = [part for part in urlparse(source_url).path.split("/") if part]
-    if "spells" in parts:
-        spell_parts = parts[parts.index("spells") + 1 :]
-        if spell_parts and spell_parts[-1].casefold() == "index.html":
-            spell_parts.pop()
-        if len(spell_parts) >= 2:
-            return "arkal-" + slugify("--".join(spell_parts[:2]))
+def spell_id_from_name(name: str) -> str:
+    """Return the spell ID shared by every rulebook printing of a spell."""
+
     return "arkal-" + slugify(name)
+
+
+def spell_printing_rank(record: dict) -> tuple[int, str, str]:
+    """Sort key choosing which printing of a spell to keep; lower is preferred.
+
+    Preferred rulebooks come first, then other named rulebooks, then records
+    without one. Rulebook and URL break remaining ties so every import keeps
+    the same printing.
+    """
+
+    book = record.get("source_book") or ""
+    if book in PREFERRED_SOURCE_BOOKS:
+        group = PREFERRED_SOURCE_BOOKS.index(book)
+    else:
+        group = len(PREFERRED_SOURCE_BOOKS) + (0 if book else 1)
+    return (group, book.casefold(), record.get("source_url") or "")
+
+
+def collapse_spell_printings(level_records: dict[str, list[dict]]) -> tuple[dict[str, list[str]], dict[str, dict]]:
+    """Keep one printing per spell name across one class's level lists.
+
+    Returns each level's ordered spell IDs and the kept record for each ID.
+    Printings of a spell can be listed at different levels; the spell stays
+    only at the levels that list its kept printing.
+    """
+
+    kept: dict[str, dict] = {}
+    for records in level_records.values():
+        for record in records:
+            spell_id = spell_id_from_name(record["name"])
+            if spell_id not in kept or spell_printing_rank(record) < spell_printing_rank(kept[spell_id]):
+                kept[spell_id] = record
+    level_ids: dict[str, list[str]] = {}
+    for level, records in level_records.items():
+        ids = [spell_id_from_name(record["name"]) for record in records]
+        level_ids[level] = list(
+            dict.fromkeys(
+                spell_id
+                for spell_id, record in zip(ids, records)
+                if spell_printing_rank(record) == spell_printing_rank(kept[spell_id])
+            )
+        )
+    return level_ids, kept
 
 
 def _static_spell_url(source_url: str) -> str | None:
@@ -278,7 +319,7 @@ def parse_spell_page(html: str, source_url: str, fetched_at: str | None = None) 
         components = [part.strip() for part in labels["Components"].split(",")]
     record = {
         "schema_version": 1,
-        "id": spell_id_from_url(source_url, name),
+        "id": spell_id_from_name(name),
         "name": name,
         "normalized_name": normalized_name(name),
         "source_url": source_url,
@@ -375,8 +416,7 @@ def import_class(
             }
         )
 
-    imported: dict[str, dict] = {}
-    level_ids: dict[str, list[str]] = {}
+    level_records: dict[str, list[dict]] = {}
     completed_levels = 0
     downloaded_spells = 0
     skipped_spells = 0
@@ -394,7 +434,7 @@ def import_class(
         }
     )
     for level, links in level_links.items():
-        ids: list[str] = []
+        records = level_records.setdefault(str(level), [])
         for link in links:
             try:
                 record = fetch_spell_record(link["url"], fetcher)
@@ -422,13 +462,7 @@ def import_class(
                     }
                 )
                 continue
-            membership = {"class_name": class_info["class_name"], "spell_level": level}
-            previous = imported.get(record["id"], {}).get("imported_from_classes", [])
-            record["imported_from_classes"] = list(
-                {(item["class_name"], item["spell_level"]): item for item in [*previous, membership]}.values()
-            )
-            imported[record["id"]] = record
-            ids.append(record["id"])
+            records.append(record)
             downloaded_spells += 1
             processed_spells += 1
             emit(
@@ -445,14 +479,13 @@ def import_class(
                     "total_spells": discovered_spells,
                 }
             )
-        level_ids[str(level)] = list(dict.fromkeys(ids))
         completed_levels += 1
         emit(
             {
                 "type": "level_completed",
                 "class_name": class_info["class_name"],
                 "level": level,
-                "spells_in_level": len(level_ids[str(level)]),
+                "spells_in_level": len({record["id"] for record in records}),
                 "completed_levels": completed_levels,
                 "total_levels": total_levels,
                 "downloaded_spells": downloaded_spells,
@@ -461,6 +494,12 @@ def import_class(
                 "total_spells": discovered_spells,
             }
         )
+    level_ids, kept = collapse_spell_printings(level_records)
+    for record in kept.values():
+        record["imported_from_classes"] = []
+    for level, ids in level_ids.items():
+        for spell_id in ids:
+            kept[spell_id]["imported_from_classes"].append({"class_name": class_info["class_name"], "spell_level": int(level)})
     result = {
         "schema_version": 1,
         "class_name": class_info["class_name"],
@@ -468,4 +507,4 @@ def import_class(
         "levels": level_ids,
         "imported_at": utc_now(),
     }
-    return result, imported
+    return result, kept

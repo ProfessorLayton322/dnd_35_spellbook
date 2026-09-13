@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from queue import Queue
 from threading import Thread
@@ -16,17 +17,67 @@ from fastapi.templating import Jinja2Templates
 from .arkal import import_class
 from .fetch import Fetcher
 from .service import commit_open_batch, prefix_search
+from .srd import build_summon_index
 from .store import RuntimeStore
 from .util import resolve_portable_path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
+EXPORT_LABELS = {"toc": "table of contents", "append": "new pages", "manifest": "manifest"}
+
+
+def _export_filename(book_name: str, label: str, suffix: str) -> str:
+    safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", book_name).strip(" .") or "spellbook"
+    return f"{safe_name} - {label}{suffix}"
 
 
 def _validate_class_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or parsed.hostname != "dnd.arkalseif.info":
         raise ValueError("Enter a dnd.arkalseif.info class URL")
+
+
+def _summon_import_message(lists: dict, metadata: dict) -> str:
+    message = f"Imported summons: {metadata['statblock_count']} creature statblocks from {metadata['summon_page_count']} summon tables"
+    unresolved = metadata["unresolved"]
+    if not unresolved:
+        return message
+    names = ", ".join(f"{item['display_name']} ({lists[item['list']]['spell_name']})" for item in unresolved[:5])
+    more = f" and {len(unresolved) - 5} more" if len(unresolved) > 5 else ""
+    return f"{message}; {len(unresolved)} summon entries have no matching statblock: {names}{more}"
+
+
+def _stream_progress(thread_name: str, job: Callable[[Callable[[dict], None]], dict]) -> StreamingResponse:
+    """Run a slow import in a thread and stream its progress as NDJSON.
+
+    ``job`` receives a callback for progress events and returns the fields of
+    the final ``done`` event; an exception becomes an ``error`` event.
+    """
+
+    events: Queue[dict | None] = Queue()
+
+    def run() -> None:
+        try:
+            events.put({"type": "done", **job(events.put)})
+        except Exception as exc:
+            events.put({"type": "error", "message": str(exc)})
+        finally:
+            events.put(None)
+
+    Thread(target=run, name=thread_name, daemon=True).start()
+
+    def stream_events() -> Iterator[str]:
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        stream_events(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 def create_app(runtime_dir: Path) -> FastAPI:
@@ -88,65 +139,90 @@ def create_app(runtime_dir: Path) -> FastAPI:
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
-        events: Queue[dict | None] = Queue()
-
-        def run_import() -> None:
+        def run_import(publish: Callable[[dict], None]) -> dict:
             latest_progress: dict = {}
 
-            def publish(event: dict) -> None:
+            def on_event(event: dict) -> None:
                 latest_progress.update(event)
-                events.put(event)
+                publish(event)
 
-            try:
-                class_record, spells = import_class(url, Fetcher(), on_event=publish)
-                app.state.store.merge_class_import(class_record, spells)
-                counts = ", ".join(f"L{level}: {len(ids)}" for level, ids in class_record["levels"].items())
-                downloaded_spells = latest_progress.get("downloaded_spells", 0)
-                skipped_spells = latest_progress.get("skipped_spells", 0)
-                processed_spells = latest_progress.get("processed_spells", downloaded_spells + skipped_spells)
-                total_spells = latest_progress.get("total_spells", downloaded_spells)
-                skipped_note = f"; skipped {skipped_spells} missing spell pages" if skipped_spells else ""
-                message = f"Imported {class_record['class_name']} ({counts}){skipped_note}"
-                events.put(
-                    {
-                        "type": "done",
-                        "class_name": class_record["class_name"],
-                        "completed_levels": len(class_record["levels"]),
-                        "total_levels": len(class_record["levels"]),
-                        "downloaded_spells": downloaded_spells,
-                        "skipped_spells": skipped_spells,
-                        "processed_spells": processed_spells,
-                        "total_spells": total_spells,
-                        "unique_spells": len(spells),
-                        "message": message,
-                        "redirect": "/?message=" + quote(message),
-                    }
-                )
-            except Exception as exc:
-                events.put({"type": "error", "message": str(exc)})
-            finally:
-                events.put(None)
+            class_record, spells = import_class(url, Fetcher(), on_event=on_event)
+            app.state.store.merge_class_import(class_record, spells)
+            counts = ", ".join(f"L{level}: {len(ids)}" for level, ids in class_record["levels"].items())
+            downloaded_spells = latest_progress.get("downloaded_spells", 0)
+            skipped_spells = latest_progress.get("skipped_spells", 0)
+            processed_spells = latest_progress.get("processed_spells", downloaded_spells + skipped_spells)
+            total_spells = latest_progress.get("total_spells", downloaded_spells)
+            skipped_note = f"; skipped {skipped_spells} missing spell pages" if skipped_spells else ""
+            message = f"Imported {class_record['class_name']} ({counts}){skipped_note}"
+            return {
+                "class_name": class_record["class_name"],
+                "completed_levels": len(class_record["levels"]),
+                "total_levels": len(class_record["levels"]),
+                "downloaded_spells": downloaded_spells,
+                "skipped_spells": skipped_spells,
+                "processed_spells": processed_spells,
+                "total_spells": total_spells,
+                "unique_spells": len(spells),
+                "message": message,
+                "redirect": "/?message=" + quote(message),
+            }
 
-        Thread(target=run_import, name="class-import", daemon=True).start()
+        return _stream_progress("class-import", run_import)
 
-        def stream_events() -> Iterator[str]:
-            while True:
-                event = events.get()
-                if event is None:
-                    break
-                yield json.dumps(event, ensure_ascii=False) + "\n"
+    def import_summons(on_event: Callable[[dict], None] | None = None) -> tuple[str, dict]:
+        lists, monsters, metadata = build_summon_index(Fetcher(), on_event=on_event)
+        # Unresolved entries are saved too, matching the CLI, and reported as an error.
+        app.state.store.save_summon_indexes(lists, monsters, metadata)
+        return _summon_import_message(lists, metadata), metadata
 
-        return StreamingResponse(
-            stream_events(),
-            media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        )
+    @app.post("/build-summon-index")
+    def build_summon_index_route():
+        try:
+            message, metadata = import_summons()
+            return redirect(error=message) if metadata["unresolved"] else redirect(message=message)
+        except Exception as exc:
+            return redirect(error=str(exc))
+
+    @app.post("/api/build-summon-index")
+    def build_summon_index_stream_route():
+        def run_build(publish: Callable[[dict], None]) -> dict:
+            message, metadata = import_summons(publish)
+            flash = "error" if metadata["unresolved"] else "message"
+            return {
+                "parsed_tables": metadata["summon_page_count"],
+                "total_tables": metadata["summon_page_count"],
+                "downloaded_monster_pages": metadata["monster_page_count"],
+                "total_monster_pages": metadata["monster_page_count"],
+                "statblocks": metadata["statblock_count"],
+                "unresolved": len(metadata["unresolved"]),
+                "message": message,
+                "redirect": f"/?{flash}=" + quote(message),
+            }
+
+        return _stream_progress("summon-import", run_build)
 
     @app.post("/spellbooks")
     def create_spellbook_route(name: str = Form(...)):
         try:
             created = app.state.store.create_spellbook(name)
             return redirect(created["id"], "Spellbook created")
+        except Exception as exc:
+            return redirect(error=str(exc))
+
+    @app.post("/spellbooks/{book_id}/delete")
+    def delete_spellbook_route(book_id: str):
+        try:
+            deleted = app.state.store.delete_spellbook(book_id)
+            return redirect(message=f"Deleted spellbook {deleted['name']}")
+        except Exception as exc:
+            return redirect(book_id, error=str(exc))
+
+    @app.post("/imported-classes/delete")
+    def delete_imported_class_route(class_name: str = Form(...)):
+        try:
+            removed = app.state.store.delete_imported_class(class_name)
+            return redirect(message=f"Deleted {class_name} spell list; removed {removed} unused spell(s)")
         except Exception as exc:
             return redirect(error=str(exc))
 
@@ -211,15 +287,18 @@ def create_app(runtime_dir: Path) -> FastAPI:
         book_dir = app.state.store.spellbook_dir(book_id)
         if kind == "full":
             path = book_dir / "full.pdf"
+            label = "full spellbook"
         elif kind in {"toc", "append", "manifest"} and book["exports"]:
             last = book["exports"][-1]
             key = {"toc": "toc_pdf", "append": "append_pdf"}.get(kind)
             stored_path = last[key] if key else f"exports/{last['batch_id']}/manifest.json"
             path = resolve_portable_path(book_dir, stored_path)
+            label = f"{last['batch_id']} {EXPORT_LABELS[kind]}"
         else:
             return JSONResponse({"error": "File not available"}, status_code=404)
         if not path.is_file() or book_dir not in path.resolve().parents:
             return JSONResponse({"error": "File not available"}, status_code=404)
-        return FileResponse(path)
+        # Inline keeps browsers showing the file; the name is used when it is saved.
+        return FileResponse(path, filename=_export_filename(book["name"], label, path.suffix), content_disposition_type="inline")
 
     return app

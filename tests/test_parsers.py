@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from spellbook_builder.arkal import fetch_level_links, fetch_spell_record, import_class, parse_class_page, parse_level_page, parse_spell_page, spell_id_from_url
+from spellbook_builder.arkal import fetch_level_links, fetch_spell_record, import_class, parse_class_page, parse_level_page, parse_spell_page
 from spellbook_builder.fetch import FetchError
-from spellbook_builder.srd import parse_monster_page, parse_summon_page, resolve_entry
+from spellbook_builder.srd import build_summon_index, parse_monster_page, parse_summon_page, resolve_entry, summon_urls
 from spellbook_builder.tables import table_to_text
 
 
@@ -13,6 +13,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def spell_page(name: str, book: str = "Player's Handbook v.3.5") -> str:
+    return fixture("flaming_sphere.html").replace("Flaming Sphere", name).replace("Player's Handbook v.3.5", book)
 
 
 def test_table_to_plain_text_expands_spans_and_links():
@@ -73,10 +77,10 @@ def test_level_pagination_is_followed_and_deduplicated():
     assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray", "Storm Bolt"]
 
 
-def test_spell_ids_are_stable_across_static_and_dynamic_urls():
-    static = "https://dnd.arkalseif.info/spells/book--1/flame-orb--10/index.html"
-    dynamic = "https://dndtools.org/spells/book--1/flame-orb--10/"
-    assert spell_id_from_url(static, "Flame Orb") == spell_id_from_url(dynamic, "Flame Orb")
+def test_every_printing_of_a_spell_name_shares_one_id():
+    core = parse_spell_page(spell_page("Acid Splash"), "https://dnd.arkalseif.info/spells/players-handbook-v35--6/acid-splash--2373/index.html")
+    reprint = parse_spell_page(spell_page("Acid splash*", "Magic of Faerun"), "https://dndtools.org/spells/magic-of-faerun--20/acid-splash--1604/")
+    assert core["id"] == reprint["id"] == "arkal-acid-splash"
 
 
 def test_incomplete_working_spell_falls_back_to_static_mirror():
@@ -92,7 +96,7 @@ def test_incomplete_working_spell_falls_back_to_static_mirror():
     record = fetch_spell_record(dynamic, fetcher)
 
     assert fetcher.requested == [dynamic, static]
-    assert record["id"] == "arkal-players-handbook-v35-6-detect-magic-2489"
+    assert record["id"] == "arkal-detect-magic"
     assert record["source_url"] == static
     assert record["content_blocks"][0]["text"].startswith("You detect magical auras")
 
@@ -103,13 +107,13 @@ def test_class_import_reports_spell_and_completed_level_progress():
         f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000"
         for level in (0, 2)
     ]
-    spell_urls = [
-        f"https://dndtools.org/spells/book--1/{slug}--{number}/"
-        for slug, number in (("flame-orb", 10), ("frost-ray", 11), ("storm-bolt", 12))
-    ]
+    spell_urls = {
+        f"https://dndtools.org/spells/book--1/{slug}--{number}/": name
+        for slug, number, name in (("flame-orb", 10, "Flame Orb"), ("frost-ray", 11, "Frost Ray"), ("storm-bolt", 12, "Storm Bolt"))
+    }
     pages = {root: fixture("arkal_class.html")}
     pages.update({url: fixture("arkal_level_complete.html") for url in level_urls})
-    pages.update({url: fixture("flaming_sphere.html") for url in spell_urls})
+    pages.update({url: spell_page(name) for url, name in spell_urls.items()})
     events: list[dict] = []
 
     class_record, spells = import_class(root, FixtureFetcher(pages), on_event=events.append)
@@ -143,9 +147,9 @@ def test_class_import_skips_only_missing_spell_pages():
     }
     pages = {root: fixture("arkal_class.html")}
     pages.update({url: fixture("arkal_level_complete.html") for url in level_urls})
-    pages[spell_urls["flame-orb"]] = fixture("flaming_sphere.html")
+    pages[spell_urls["flame-orb"]] = spell_page("Flame Orb")
     pages[spell_urls["frost-ray"]] = FetchError("missing", status_code=404)
-    pages[spell_urls["storm-bolt"]] = fixture("flaming_sphere.html")
+    pages[spell_urls["storm-bolt"]] = spell_page("Storm Bolt")
     events: list[dict] = []
 
     class_record, spells = import_class(root, FixtureFetcher(pages), on_event=events.append)
@@ -156,6 +160,34 @@ def test_class_import_skips_only_missing_spell_pages():
     assert len(skipped) == 2
     assert skipped[-1]["skipped_spells"] == 2
     assert events[-1]["processed_spells"] == events[-1]["total_spells"] == 6
+
+
+def test_class_import_keeps_one_printing_per_spell_name():
+    root = "https://dnd.arkalseif.info/classes/fixture-mage/index.html"
+    level_zero, level_two = (
+        f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000"
+        for level in (0, 2)
+    )
+    listing = fixture("arkal_level_complete.html")
+    frost_ray_row = '<tr><td><a href="/spells/book--1/frost-ray--11/">Frost Ray</a></td><td>Evocation</td></tr>'
+    spell_url = "https://dndtools.org/spells/book--1/{}/"
+    pages = {
+        root: fixture("arkal_class.html"),
+        level_zero: listing,
+        # Level 2 lists only the reprint, not the preferred core printing.
+        level_two: listing.replace(frost_ray_row, "").replace("total 3 items", "total 2 items"),
+        spell_url.format("flame-orb--10"): spell_page("Acid Splash", "Magic of Faerun"),
+        spell_url.format("frost-ray--11"): spell_page("Acid Splash"),
+        spell_url.format("storm-bolt--12"): spell_page("Storm Bolt"),
+    }
+
+    class_record, spells = import_class(root, FixtureFetcher(pages))
+
+    assert class_record["levels"] == {"0": ["arkal-acid-splash", "arkal-storm-bolt"], "2": ["arkal-storm-bolt"]}
+    assert set(spells) == {"arkal-acid-splash", "arkal-storm-bolt"}
+    assert spells["arkal-acid-splash"]["source_book"] == "Player's Handbook v.3.5"
+    assert spells["arkal-acid-splash"]["imported_from_classes"] == [{"class_name": "Fixture Mage", "spell_level": 0}]
+    assert [item["spell_level"] for item in spells["arkal-storm-bolt"]["imported_from_classes"]] == [0, 2]
 
 
 def test_class_import_does_not_skip_non_404_fetch_errors():
@@ -196,6 +228,26 @@ def test_monster_multi_variant_and_multiple_tables():
     assert "Commonly summoned." in " ".join(block["text"] for block in page["statblocks"][1]["sections"])
     bat = parse_monster_page(fixture("dire_bat.html"), "https://www.d20srd.org/srd/monsters/direBat.htm")
     assert bat["statblocks"][0]["fields"]["Hit Dice"] == "4d8+12 (30 hp)"
+
+
+def test_summon_index_build_reports_table_and_creature_page_progress():
+    creature = fixture("dire_rat.html")
+    pages = {url: fixture("summon_monster_i.html") for _family, _level, url in summon_urls()}
+    pages["https://www.d20srd.org/srd/monsters/direRat.htm"] = creature
+    pages["https://www.d20srd.org/srd/monsters/dog.htm"] = creature
+    events: list[dict] = []
+
+    build_summon_index(FixtureFetcher(pages), on_event=events.append)
+
+    tables = [event for event in events if event["type"] == "summon_table_parsed"]
+    assert [event["parsed_tables"] for event in tables] == list(range(1, 19))
+    assert all(event["total_tables"] == 18 and event["total_monster_pages"] is None for event in tables)
+    assert events[len(tables)]["type"] == "monster_download_started"
+    assert events[len(tables)]["total_monster_pages"] == 2
+    assert [(event["type"], event["downloaded_monster_pages"], event["total_monster_pages"]) for event in events[len(tables) + 1 :]] == [
+        ("monster_page_downloaded", 1, 2),
+        ("monster_page_downloaded", 2, 2),
+    ]
 
 
 def test_summon_lists_and_name_resolution():

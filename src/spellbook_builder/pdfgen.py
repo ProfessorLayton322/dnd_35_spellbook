@@ -11,10 +11,12 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import Flowable, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Flowable, HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer
 
 
-RENDERER_VERSION = 1
+# 1: every entity started on a new page.
+# 2: entities flow continuously, separated by a black rule; only a batch starts a new page.
+RENDERER_VERSION = 2
 
 
 def _safe(value) -> str:
@@ -78,7 +80,13 @@ def _block_flowables(blocks: list[dict], styles) -> list:
     return story
 
 
-def spell_flowables(spell: dict, styles) -> list:
+def entity_separator() -> Flowable:
+    return HRFlowable(width="100%", thickness=1, lineCap="butt", color=colors.black, spaceBefore=10, spaceAfter=10)
+
+
+def spell_flowables(spell: dict, styles) -> tuple[list, list]:
+    """Return ``(heading, body)`` so the heading can be kept on one page."""
+
     school = spell.get("school") or ""
     if spell.get("subschool"):
         school += f" ({spell['subschool']})"
@@ -91,10 +99,10 @@ def spell_flowables(spell: dict, styles) -> list:
     source = spell.get("source_book") or ""
     if spell.get("source_page"):
         source += f", p. {spell['source_page']}"
-    first = [Paragraph(_safe(spell["name"]), styles["EntityTitle"])]
+    heading = [Paragraph(_safe(spell["name"]), styles["EntityTitle"])]
     if school:
-        first.append(Paragraph(_safe(school), styles["BodySmall"]))
-    story: list = [KeepTogether(first)]
+        heading.append(Paragraph(_safe(school), styles["BodySmall"]))
+    body: list = []
     for label, value in (
         ("Level", levels),
         ("Components", spell.get("components")),
@@ -110,25 +118,28 @@ def spell_flowables(spell: dict, styles) -> list:
     ):
         flowable = _line(label, value, styles)
         if flowable:
-            story.append(flowable)
-    story.append(Spacer(1, 5))
-    story.extend(_block_flowables(spell.get("content_blocks", []), styles))
-    return story
+            body.append(flowable)
+    body.append(Spacer(1, 5))
+    body.extend(_block_flowables(spell.get("content_blocks", []), styles))
+    return heading, body
 
 
-def monster_flowables(monster: dict, display_name: str, styles) -> list:
+def monster_flowables(monster: dict, display_name: str, styles) -> tuple[list, list]:
+    """Return ``(heading, body)`` so the heading can be kept on one page."""
+
     title = display_name or monster["name"]
-    story: list = [Paragraph(_safe(title), styles["EntityTitle"])]
+    heading = [Paragraph(_safe(title), styles["EntityTitle"])]
     if display_name and display_name != monster["name"]:
-        story.append(Paragraph(f"SRD statblock variant: {_safe(monster['name'])}", styles["Meta"]))
+        heading.append(Paragraph(f"SRD statblock variant: {_safe(monster['name'])}", styles["Meta"]))
+    body: list = []
     for label, value in monster.get("fields", {}).items():
         flowable = _line(label, value, styles)
         if flowable:
-            story.append(flowable)
-    story.append(Spacer(1, 5))
-    story.extend(_block_flowables(monster.get("shared_sections", []), styles))
-    story.append(Paragraph(f"Source: {_safe(monster.get('source_url', ''))}", styles["Meta"]))
-    return story
+            body.append(flowable)
+    body.append(Spacer(1, 5))
+    body.extend(_block_flowables(monster.get("shared_sections", []), styles))
+    body.append(Paragraph(f"Source: {_safe(monster.get('source_url', ''))}", styles["Meta"]))
+    return heading, body
 
 
 def _atomic_pdf_target(path: Path) -> tuple[Path, Path]:
@@ -146,15 +157,19 @@ def render_batch_segment(path: Path, entities: list[dict], spells: dict, monster
     story: list = []
     offset = logical_page_start - 1
     for index, entity in enumerate(entities):
-        story.append(EntityMarker(index, entity["title"], anchors, offset))
         if entity["kind"] == "spell":
-            story.extend(spell_flowables(spells[entity["id"]], styles))
+            heading, body = spell_flowables(spells[entity["id"]], styles)
         elif entity["kind"] == "summon_statblock":
-            story.extend(monster_flowables(monsters[entity["id"]], entity["title"], styles))
+            heading, body = monster_flowables(monsters[entity["id"]], entity["title"], styles)
         else:
             raise ValueError(f"Unknown printable entity kind: {entity['kind']}")
-        if index != len(entities) - 1:
-            story.append(PageBreak())
+        # Entities flow directly after one another; only a new batch segment starts a new page.
+        # The rule, TOC anchor, heading, and first body line change pages together, so the
+        # anchor always records the page that shows the title.
+        group = [entity_separator()] if index else []
+        group += [EntityMarker(index, entity["title"], anchors, offset), *heading, *body[:1]]
+        story.append(KeepTogether(group))
+        story.extend(body[1:])
 
     temp, target = _atomic_pdf_target(path)
     doc = SimpleDocTemplate(str(temp), pagesize=letter, rightMargin=0.62 * inch, leftMargin=0.62 * inch, topMargin=0.58 * inch, bottomMargin=0.58 * inch)

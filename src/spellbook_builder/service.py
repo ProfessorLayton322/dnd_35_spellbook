@@ -51,7 +51,7 @@ def expand_entities(open_entities: list[dict], spells: dict, summon_lists: dict)
         if key:
             summon_list = summon_lists.get(key)
             if not summon_list:
-                raise ServiceError(f"{spell['name']} requires summon index {key}; run build-summon-index")
+                raise ServiceError(f"{spell['name']} needs its summon creatures; choose Import summons in the Data section (CLI: build-summon-index)")
             for entry in summon_list["entries"]:
                 refs = entry.get("monster_refs") or ([entry["monster_ref"]] if entry.get("monster_ref") else [])
                 if not refs:
@@ -101,8 +101,11 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
         raise ServiceError("There is no open batch")
     if not open_batch["entities"]:
         raise ServiceError("Cannot commit an empty batch")
-    if book.get("renderer_version") != RENDERER_VERSION:
-        raise ServiceError("Renderer version differs from this spellbook; historical segments will not be rewritten")
+    # A newer renderer only affects the batch being committed; historical
+    # segments keep their original layout and are never re-rendered.
+    book_renderer = book.get("renderer_version", 1)
+    if book_renderer > RENDERER_VERSION:
+        raise ServiceError(f"Spellbook uses renderer {book_renderer}, newer than this application's renderer {RENDERER_VERSION}")
     spells = store.load_spells()
     monsters = store.load_monsters()
     expanded = expand_entities(open_batch["entities"], spells, store.load_summon_lists())
@@ -135,6 +138,7 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
     candidate = dict(book)
     candidate["batches"] = book["batches"] + [batch]
     candidate["open_batch"] = None
+    candidate["renderer_version"] = RENDERER_VERSION
     candidate["content_page_count"] = batch["page_end"]
     export_dir = book_dir / "exports" / batch_id
     toc_path = export_dir / "toc.pdf"

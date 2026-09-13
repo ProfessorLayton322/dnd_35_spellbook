@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#26364a">
   <title>D&D 3.5 Spellbook Builder</title>
+  <link rel="icon" href="/static/icon.png">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,7 +19,7 @@
   <section>
     <h2>Data</h2>
     <form id="class-import-form" action="/import-class" data-progress-action="/api/import-class" method="post" class="row">
-      <label>Arkalself class URL <input name="url" type="url" required placeholder="https://dnd.arkalseif.info/classes/warmage/index.html"></label>
+      <label class="grow">Arkalself class URL <input name="url" type="url" required autocapitalize="off" spellcheck="false" placeholder="https://dnd.arkalseif.info/classes/warmage/index.html"></label>
       <button>Import class</button>
     </form>
     <div id="class-import-progress" class="import-progress" aria-live="polite" hidden>
@@ -34,14 +36,38 @@
       <p id="import-progress-status" class="muted">Starting import…</p>
     </div>
     {% if state.imported_classes %}
-      <ul>{% for name, item in state.imported_classes|dictsort %}<li><b>{{ name }}</b>: {% for level, ids in item.levels|dictsort %}L{{ level }}={{ ids|length }}{% if not loop.last %}, {% endif %}{% endfor %}</li>{% endfor %}</ul>
-    {% else %}<p class="muted">No classes imported yet. The CLI also provides <code>build-summon-index</code>.</p>{% endif %}
+      <ul class="item-list">
+        {% for name, item in state.imported_classes|dictsort %}<li><span class="item-text"><b>{{ name }}</b> <span class="muted">{% for level, ids in item.levels|dictsort %}L{{ level }}={{ ids|length }}{% if not loop.last %}, {% endif %}{% endfor %}</span></span><form action="/imported-classes/delete" method="post" data-confirm="Delete the {{ name }} spell list? Its spells are removed unless another class list or a spellbook uses them."><input type="hidden" name="class_name" value="{{ name }}"><button class="small">delete</button></form></li>{% endfor %}
+      </ul>
+    {% else %}<p class="muted">No classes imported yet.</p>{% endif %}
+
+    {% set summons = (state.index_metadata or {}).summons %}
+    <form id="summon-import-form" action="/build-summon-index" data-progress-action="/api/build-summon-index" method="post" class="row summon-import">
+      <div class="grow">
+        <b>Summon creatures</b>
+        {% if summons %}<div class="muted">{{ summons.statblock_count }} creature statblocks from {{ summons.summon_page_count }} Summon Monster and Summon Nature's Ally tables, imported {{ summons.built_at[:10] }}{% if summons.unresolved %}; {{ summons.unresolved|length }} entries unresolved{% endif %}.</div>
+        {% else %}<div class="muted">Not imported yet. Needed to commit a batch with Summon Monster or Summon Nature's Ally spells. Downloads their creature tables and statblocks from d20srd.org.</div>{% endif %}
+      </div>
+      <button>{% if summons %}Re-import summons{% else %}Import summons{% endif %}</button>
+    </form>
+    <div id="summon-import-progress" class="import-progress" aria-live="polite" hidden>
+      <div class="progress-heading">
+        <strong id="summon-progress-title">Importing summons</strong>
+        <span id="summon-progress-percent">0%</span>
+      </div>
+      <progress id="summon-progress-bar" value="0" max="1">0%</progress>
+      <div class="progress-counts">
+        <span><strong id="summon-tables">0 / —</strong> summon tables read</span>
+        <span><strong id="summon-creature-pages">0 / —</strong> creature pages downloaded</span>
+      </div>
+      <p id="summon-progress-status" class="muted">Starting import…</p>
+    </div>
   </section>
 
   <section>
     <h2>Spellbooks</h2>
     <form action="/spellbooks" method="post" class="row">
-      <label>Name <input name="name" required maxlength="80"></label><button>Create</button>
+      <label class="grow">Name <input name="name" required maxlength="80"></label><button>Create</button>
     </form>
     {% if state.spellbooks %}
       <nav>{% for id, item in state.spellbooks|dictsort %}<a href="/?book={{ id }}" {% if selected and selected.id == id %}class="selected"{% endif %}>{{ item.name }}</a>{% endfor %}</nav>
@@ -50,34 +76,35 @@
 
   {% if selected %}
   <section>
-    <h2>{{ selected.name }}</h2>
+    <div class="section-heading">
+      <h2>{{ selected.name }}</h2>
+      <form action="/spellbooks/{{ selected.id }}/delete" method="post" data-confirm="Delete the spellbook “{{ selected.name }}” with all of its batches and PDFs? This cannot be undone."><button class="danger">Delete spellbook</button></form>
+    </div>
     <p>{{ selected.batches|length }} committed batch(es); {{ selected.content_page_count }} content page(s).</p>
     {% if not selected.open_batch %}
-      <form action="/spellbooks/{{ selected.id }}/begin" method="post"><button>Begin batch</button></form>
+      <form action="/spellbooks/{{ selected.id }}/begin" method="post"><button class="primary">Begin batch</button></form>
     {% else %}
       <h3>Open batch {{ selected.open_batch.id }}</h3>
-      <form action="/spellbooks/{{ selected.id }}/add-spell" method="post" class="row autocomplete">
-        <label>Spell prefix <input id="spell-query" autocomplete="off" placeholder="fire"></label>
-        <input id="spell-id" name="spell_id" type="hidden">
-        <select id="spell-results" size="5" aria-label="Prefix-matched spells"></select>
-        <button>Add selected spell</button>
+      <form action="/spellbooks/{{ selected.id }}/add-spell" method="post" class="autocomplete">
+        <label>Spell prefix <input id="spell-query" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type the start of a spell name" aria-controls="spell-results"></label>
+        <ul id="spell-results" class="spell-results" aria-label="Prefix-matched spells"></ul>
       </form>
       {% if state.imported_classes %}
       <form action="/spellbooks/{{ selected.id }}/add-class-level" method="post" class="row">
-        <label>Class <select name="class_name">{% for name in state.imported_classes|sort %}<option>{{ name }}</option>{% endfor %}</select></label>
-        <label>Level <select name="level">{% for level in range(10) %}<option>{{ level }}</option>{% endfor %}</select></label>
+        <label class="compact">Class <select name="class_name">{% for name in state.imported_classes|sort %}<option>{{ name }}</option>{% endfor %}</select></label>
+        <label class="compact">Level <select name="level">{% for level in range(10) %}<option>{{ level }}</option>{% endfor %}</select></label>
         <button>Add entire class-level list</button>
       </form>
       {% endif %}
-      <ol>
-        {% for item in open_items %}<li>{{ item.title }} <form class="inline" action="/spellbooks/{{ selected.id }}/remove/{{ loop.index0 }}" method="post"><button class="small">remove</button></form></li>{% else %}<li class="muted">No spells in this batch.</li>{% endfor %}
+      <ol class="item-list numbered">
+        {% for item in open_items %}<li><span class="item-text">{{ item.title }}</span><form action="/spellbooks/{{ selected.id }}/remove/{{ loop.index0 }}" method="post"><button class="small">remove</button></form></li>{% else %}<li class="muted">No spells in this batch.</li>{% endfor %}
       </ol>
-      <form action="/spellbooks/{{ selected.id }}/commit" method="post"><button {% if not open_items %}disabled{% endif %}>End and commit batch</button></form>
+      <form action="/spellbooks/{{ selected.id }}/commit" method="post"><button class="primary" {% if not open_items %}disabled{% endif %}>End and commit batch</button></form>
     {% endif %}
   </section>
   <section>
     <h2>Exports</h2>
-    {% if selected.exports %}<p><a href="/spellbooks/{{ selected.id }}/files/full">Full PDF</a> · <a href="/spellbooks/{{ selected.id }}/files/toc">Latest TOC diff</a> · <a href="/spellbooks/{{ selected.id }}/files/append">Latest append diff</a> · <a href="/spellbooks/{{ selected.id }}/files/manifest">Manifest</a></p>{% else %}<p class="muted">Commit a batch to generate exports.</p>{% endif %}
+    {% if selected.exports %}<p class="export-links"><a href="/spellbooks/{{ selected.id }}/files/full" target="_blank" rel="noopener">Full PDF</a><a href="/spellbooks/{{ selected.id }}/files/toc" target="_blank" rel="noopener">Latest TOC diff</a><a href="/spellbooks/{{ selected.id }}/files/append" target="_blank" rel="noopener">Latest append diff</a><a href="/spellbooks/{{ selected.id }}/files/manifest" target="_blank" rel="noopener">Manifest</a></p>{% else %}<p class="muted">Commit a batch to generate exports.</p>{% endif %}
   </section>
   {% endif %}
 </main>

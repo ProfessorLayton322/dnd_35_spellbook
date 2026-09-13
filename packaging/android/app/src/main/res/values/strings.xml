@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">D&amp;D 3.5 Spellbook</string>
+    <string name="launcher_name">Spellbook</string>
+    <string name="menu">More options</string>
+    <string name="open_in_browser">Open in web browser</string>
+    <string name="reload">Reload</string>
+    <string name="quit">Quit Spellbook</string>
+    <string name="starting">Starting the spellbook…</string>
+    <string name="start_failed">The spellbook could not start.\n\n%1$s</string>
+    <string name="connection_lost">The spellbook is not responding.</string>
+    <string name="try_again">Try again</string>
+    <string name="browser_notice">Spellbook keeps running while you use it in your browser. Stop it from its notification.</string>
+    <string name="no_browser">No web browser is installed.</string>
+    <string name="notification_channel">Spellbook running</string>
+    <string name="notification_text">Running in the background. Tap to open.</string>
+    <string name="stop">Stop</string>
+    <string name="preparing_file">Preparing the file…</string>
+    <string name="export_open">Open</string>
+    <string name="export_save">Save to device…</string>
+    <string name="export_share">Share…</string>
+    <string name="export_failed">Could not get the file: %1$s</string>
+    <string name="export_saved">Saved</string>
+    <string name="no_viewer">No app on this device can open this file. Use Save or Share instead.</string>
+</resources>

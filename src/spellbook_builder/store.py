@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 
+from .arkal import collapse_spell_printings, spell_id_from_name, spell_printing_rank
+from .pdfgen import RENDERER_VERSION
 from .util import atomic_json_write, read_json, slugify, utc_now
 
 
@@ -21,7 +26,9 @@ class RuntimeStore:
         self._remove_stale_atomic_files()
         if not self.state_path.exists():
             self.save_state(self.empty_state())
-        self.cleanup_incomplete_imports()
+        self._finish_interrupted_spellbook_deletes()
+        self._migrate_url_spell_ids()
+        self.reconcile_spell_index()
 
     @property
     def state_path(self) -> Path:
@@ -58,6 +65,23 @@ class RuntimeStore:
                 if path.is_file():
                     path.unlink(missing_ok=True)
 
+    def _finish_interrupted_spellbook_deletes(self) -> None:
+        """Resolve spellbook folders left in ``.deleted-*`` by a killed process.
+
+        A delete moves the book folder aside before removing the book from
+        state. A folder whose book is still in state was never deleted and is
+        moved back; any other folder belongs to a committed delete.
+        """
+
+        spellbooks = self.load_state()["spellbooks"]
+        for trash in self.spellbooks_dir.glob(".deleted-*"):
+            if not trash.is_dir():
+                continue
+            for moved in trash.iterdir():
+                if moved.name in spellbooks and not self.spellbook_dir(moved.name).exists():
+                    os.replace(moved, self.spellbook_dir(moved.name))
+            shutil.rmtree(trash, ignore_errors=True)
+
     @staticmethod
     def _spellbook_spell_ids(state: dict) -> set[str]:
         referenced: set[str] = set()
@@ -81,6 +105,8 @@ class RuntimeStore:
         without import membership are retained because they may come from a
         future or manually managed source. Spellbook references are retained so
         an open batch never loses data and historical IDs remain inspectable.
+        A retained record with no valid membership keeps its stale memberships,
+        so it is dropped once the last spellbook referencing it is deleted.
         """
 
         completed_refs: set[tuple[str, str, str]] = set()
@@ -107,9 +133,12 @@ class RuntimeStore:
                 )
                 in completed_refs
             ]
-            if memberships and not valid_memberships and spell_id not in protected_ids:
-                removed += 1
-                changed = True
+            if memberships and not valid_memberships:
+                if spell_id in protected_ids:
+                    reconciled[spell_id] = source_record
+                else:
+                    removed += 1
+                    changed = True
                 continue
             if valid_memberships != memberships:
                 record = deepcopy(source_record)
@@ -120,8 +149,12 @@ class RuntimeStore:
                 reconciled[spell_id] = source_record
         return reconciled, removed, changed
 
-    def cleanup_incomplete_imports(self) -> int:
-        """Reclaim records left by imports that never committed to state."""
+    def reconcile_spell_index(self) -> int:
+        """Reclaim records no completed import or spellbook still needs.
+
+        This also repairs imports and deletes interrupted before their index
+        rewrite finished. Returns the number of removed records.
+        """
 
         spells_path = self.indexes / "spells.json"
         if not spells_path.exists():
@@ -138,16 +171,75 @@ class RuntimeStore:
             self.save_state(state)
         return removed
 
+    @staticmethod
+    def _merge_printings(existing: dict | None, incoming: dict) -> dict:
+        """Combine two records of one spell, keeping the preferred printing.
+
+        Class memberships are combined. An equally ranked incoming record wins
+        so a re-import refreshes the stored copy.
+        """
+
+        if existing is None:
+            return deepcopy(incoming)
+        kept = existing if spell_printing_rank(existing) < spell_printing_rank(incoming) else incoming
+        merged = deepcopy(kept)
+        memberships = existing.get("imported_from_classes", []) + incoming.get("imported_from_classes", [])
+        merged["imported_from_classes"] = list({(m["class_name"], m["spell_level"]): m for m in memberships}.values())
+        return merged
+
+    def _migrate_url_spell_ids(self) -> None:
+        """Merge spells imported under per-printing URL IDs into name IDs.
+
+        Older imports keyed each rulebook printing of a spell separately, so a
+        reprinted spell was suggested and added once per printing. Class lists
+        keep each spell at its kept printing's levels, as a fresh import does,
+        and spellbook references move to the merged record. The old records
+        stay in the index until state is saved, so a migration killed part-way
+        runs again on the next startup.
+        """
+
+        spells = self.load_spells()
+        renamed = {
+            spell_id: spell_id_from_name(record["name"])
+            for spell_id, record in spells.items()
+            if spell_id.startswith("arkal-") and spell_id != spell_id_from_name(record["name"])
+        }
+        if not renamed:
+            return
+        state = self.load_state()
+        for class_record in state["imported_classes"].values():
+            listed = {
+                level: [spells[spell_id] for spell_id in spell_ids if spell_id in spells]
+                for level, spell_ids in class_record["levels"].items()
+            }
+            class_record["levels"] = collapse_spell_printings(listed)[0]
+        for book in state["spellbooks"].values():
+            open_batch = book.get("open_batch")
+            for batch in [*book.get("batches", []), *([open_batch] if open_batch else [])]:
+                for entity in batch.get("entities", []):
+                    if entity.get("kind") == "spell" and entity.get("id") in renamed:
+                        entity["id"] = renamed[entity["id"]]
+            if open_batch:
+                # Printings of one spell become a single open-batch item.
+                open_batch["entities"] = list({(entity["kind"], entity["id"]): entity for entity in open_batch["entities"]}.values())
+        merged: dict[str, dict] = {}
+        for spell_id, record in spells.items():
+            spell_id = renamed.get(spell_id, spell_id)
+            merged[spell_id] = self._merge_printings(merged.get(spell_id), {**record, "id": spell_id})
+        merged, _removed, _changed = self._reconcile_spells(state, merged)
+        state.setdefault("index_metadata", {})["spells"] = {
+            "record_count": len(merged),
+            "updated_at": utc_now(),
+        }
+        self.save_spells({**spells, **merged})
+        self.save_state(state)
+        self.save_spells(merged)
+
     def merge_class_import(self, class_record: dict, new_spells: dict[str, dict]) -> None:
         previous_spells = self.load_spells()
         spells = deepcopy(previous_spells)
         for spell_id, incoming in new_spells.items():
-            incoming = deepcopy(incoming)
-            existing = spells.get(spell_id)
-            if existing:
-                memberships = existing.get("imported_from_classes", []) + incoming.get("imported_from_classes", [])
-                incoming["imported_from_classes"] = list({(m["class_name"], m["spell_level"]): m for m in memberships}.values())
-            spells[spell_id] = incoming
+            spells[spell_id] = self._merge_printings(spells.get(spell_id), incoming)
         state = self.load_state()
         state["imported_classes"][class_record["class_name"]] = class_record
         spells, _removed, _changed = self._reconcile_spells(state, spells)
@@ -160,13 +252,29 @@ class RuntimeStore:
             self.save_state(state)
         except BaseException:
             # Keep the pre-import index if the second half of the commit fails.
-            # A hard process kill is repaired by cleanup_incomplete_imports on
-            # the next startup.
+            # A hard process kill is repaired by reconcile_spell_index on the
+            # next startup.
             try:
                 self.save_spells(previous_spells)
             except Exception:
                 pass
             raise
+
+    def delete_imported_class(self, class_name: str) -> int:
+        """Delete an imported class spell list and return the removed spell count.
+
+        A spell stays while another imported class lists it or a spellbook
+        references it.
+        """
+
+        state = self.load_state()
+        if class_name not in state["imported_classes"]:
+            raise StoreError(f"Unknown imported class: {class_name}")
+        del state["imported_classes"][class_name]
+        # State is the commit marker; startup reconciliation finishes an
+        # interrupted index rewrite.
+        self.save_state(state)
+        return self.reconcile_spell_index()
 
     def save_summon_indexes(self, lists: dict, monsters: dict, metadata: dict) -> None:
         atomic_json_write(self.indexes / "summon_lists.json", {"schema_version": 1, "records": lists})
@@ -203,7 +311,7 @@ class RuntimeStore:
             "id": spellbook_id,
             "name": name,
             "created_at": utc_now(),
-            "renderer_version": 1,
+            "renderer_version": RENDERER_VERSION,
             "batches": [],
             "open_batch": None,
             "content_page_count": 0,
@@ -227,6 +335,33 @@ class RuntimeStore:
             raise StoreError(f"Unknown spellbook: {book['id']}")
         state["spellbooks"][book["id"]] = book
         self.save_state(state)
+
+    def delete_spellbook(self, spellbook_id: str) -> dict:
+        """Delete a spellbook with its open batch, immutable segments, and exports."""
+
+        state = self.load_state()
+        book = state["spellbooks"].pop(spellbook_id, None)
+        if book is None:
+            raise StoreError(f"Unknown spellbook: {spellbook_id}")
+        # Move the folder aside first so a locked file fails the delete before
+        # anything changes. Saving state commits the delete; if the process
+        # dies before that, startup moves the folder back.
+        book_dir = self.spellbook_dir(spellbook_id)
+        trash = Path(tempfile.mkdtemp(prefix=".deleted-", dir=self.spellbooks_dir))
+        moved = trash / spellbook_id
+        try:
+            if book_dir.exists():
+                os.replace(book_dir, moved)
+            self.save_state(state)
+        except BaseException:
+            if moved.exists():
+                os.replace(moved, book_dir)
+            trash.rmdir()
+            raise
+        shutil.rmtree(trash, ignore_errors=True)
+        # Spells retained only for this book's references can now be reclaimed.
+        self.reconcile_spell_index()
+        return book
 
     def begin_batch(self, spellbook_id: str) -> dict:
         book = self.get_spellbook(spellbook_id)

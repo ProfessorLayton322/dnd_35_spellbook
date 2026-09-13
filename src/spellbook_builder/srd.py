@@ -313,17 +313,40 @@ def resolve_entry(entry: dict, page: dict) -> tuple[str | None, str]:
     return (refs[0] if len(refs) == 1 else None), reason
 
 
-def build_summon_index(fetcher: Fetcher, on_progress=None) -> tuple[dict, dict, dict]:
+def build_summon_index(fetcher: Fetcher, on_progress=None, on_event=None) -> tuple[dict, dict, dict]:
     progress = on_progress or (lambda _message: None)
+    emit = on_event or (lambda _event: None)
     lists: dict[str, dict] = {}
     target_urls: dict[str, str] = {}
-    for family, level, url in summon_urls():
+    table_urls = summon_urls()
+    for parsed_tables, (family, level, url) in enumerate(table_urls, 1):
         record = parse_summon_page(fetcher.get(url), url, family, level)
         lists[f"{family}:{level}"] = record
         for entry in record["entries"]:
             if entry["target_url"]:
                 target_urls[urldefrag(entry["target_url"]).url] = entry["target_url"]
         progress(f"parsed {record['spell_name']}: {len(record['entries'])} entries")
+        # The creature page total is unknown until every table has been read.
+        emit(
+            {
+                "type": "summon_table_parsed",
+                "spell_name": record["spell_name"],
+                "entries": len(record["entries"]),
+                "parsed_tables": parsed_tables,
+                "total_tables": len(table_urls),
+                "downloaded_monster_pages": 0,
+                "total_monster_pages": None,
+            }
+        )
+    emit(
+        {
+            "type": "monster_download_started",
+            "parsed_tables": len(table_urls),
+            "total_tables": len(table_urls),
+            "downloaded_monster_pages": 0,
+            "total_monster_pages": len(target_urls),
+        }
+    )
     pages: dict[str, dict] = {}
     statblocks: dict[str, dict] = {}
     for index, url in enumerate(sorted(target_urls), 1):
@@ -343,6 +366,17 @@ def build_summon_index(fetcher: Fetcher, on_progress=None) -> tuple[dict, dict, 
             )
             statblocks[block["id"]] = canonical
         progress(f"monster page {index}/{len(target_urls)}: {page['name']} ({len(page['statblocks'])} variants)")
+        emit(
+            {
+                "type": "monster_page_downloaded",
+                "monster_name": page["name"],
+                "variants": len(page["statblocks"]),
+                "parsed_tables": len(table_urls),
+                "total_tables": len(table_urls),
+                "downloaded_monster_pages": index,
+                "total_monster_pages": len(target_urls),
+            }
+        )
     unresolved: list[dict] = []
     for key, summon_list in lists.items():
         for entry in summon_list["entries"]:

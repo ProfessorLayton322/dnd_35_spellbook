@@ -21,9 +21,11 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.3,<10"]
+desktop = ["pywebview>=6,<7"]
 
 [project.scripts]
 spellbook = "spellbook_builder.cli:main"
+spellbook-desktop = "spellbook_builder.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

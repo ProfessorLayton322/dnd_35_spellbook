@@ -8,3 +8,11 @@ runtime/
 *.egg-info/
 .idea/
 .vscode/
+build/
+dist/
+.gradle/
+local.properties
+keystore.properties
+*.keystore
+*.jks
+.DS_Store
