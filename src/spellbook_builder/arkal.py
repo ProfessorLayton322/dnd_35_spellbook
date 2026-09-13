@@ -51,13 +51,21 @@ def parse_class_page(html: str, source_url: str) -> dict:
 
 
 def parse_level_page(html: str, source_url: str) -> list[dict]:
+    """Return a level page's spell links; an empty spell table gives no links.
+
+    Classes such as Ranger list no spells at some levels, and the site renders
+    those levels as a spell table with only its header row.
+    """
+
     content = _content(html)
     links: list[dict] = []
     seen: set[str] = set()
+    found_spell_table = False
     for table in content.find_all("table"):
         headers = normalized_name(" ".join(th.get_text(" ", strip=True) for th in table.find_all("th")))
         if "spell name" not in headers:
             continue
+        found_spell_table = True
         for row in table.find_all("tr"):
             link = row.find("a", href=re.compile(r"/spells/"))
             if not link:
@@ -66,8 +74,8 @@ def parse_level_page(html: str, source_url: str) -> list[dict]:
             if url not in seen:
                 seen.add(url)
                 links.append({"name": clean_text(link.get_text(" ")), "url": url})
-    if not links:
-        raise ArkalParseError(f"No spell links found on level page {source_url}")
+    if not found_spell_table:
+        raise ArkalParseError(f"No spell table found on level page {source_url}")
     return links
 
 
@@ -399,9 +407,12 @@ def import_class(
             }
         )
         links = fetch_level_links(level_url, fetcher)
-        level_links[level] = links
+        if links:
+            level_links[level] = links
+            progress(f"{class_info['class_name']} level {level}: {len(links)} links")
+        else:
+            progress(f"{class_info['class_name']} level {level}: no spells listed, skipped")
         discovered_spells += len(links)
-        progress(f"{class_info['class_name']} level {level}: {len(links)} links")
         emit(
             {
                 "type": "level_scanned",
@@ -415,6 +426,11 @@ def import_class(
                 "discovered_spells": discovered_spells,
             }
         )
+    if not level_links:
+        raise ArkalParseError(f"{class_info['class_name']} lists no spells at any spell level")
+    # Empty levels are not imported, so the download phase counts only the
+    # levels that list spells.
+    total_levels = len(level_links)
 
     level_records: dict[str, list[dict]] = {}
     completed_levels = 0

@@ -27,6 +27,17 @@ def test_live_wizard_lists_are_not_truncated_to_one_page():
     assert all(count > 20 for count in counts.values()), counts
 
 
+def test_live_empty_spell_levels_have_no_links():
+    fetcher = Fetcher(delay=0.05)
+    expected_levels = {"ranger": {1, 2, 3, 4}, "sublime-chord": set()}
+    for slug, levels_with_spells in expected_levels.items():
+        class_url = f"https://dnd.arkalseif.info/classes/{slug}/index.html"
+        parsed = parse_class_page(fetcher.get(class_url), class_url)
+        counts = {level: len(fetch_level_links(url, fetcher)) for level, url in parsed["levels"].items()}
+        assert set(counts) == set(range(10))
+        assert {level for level, count in counts.items() if count} == levels_with_spells, (slug, counts)
+
+
 def test_live_d20srd_examples():
     fetcher = Fetcher(delay=0.2)
     rat_url = "https://www.d20srd.org/srd/monsters/direRat.htm"

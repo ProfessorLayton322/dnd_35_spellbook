@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from spellbook_builder.arkal import fetch_level_links, fetch_spell_record, import_class, parse_class_page, parse_level_page, parse_spell_page
+from spellbook_builder.arkal import ArkalParseError, fetch_level_links, fetch_spell_record, import_class, parse_class_page, parse_level_page, parse_spell_page
 from spellbook_builder.fetch import FetchError
 from spellbook_builder.srd import build_summon_index, parse_monster_page, parse_summon_page, resolve_entry, summon_urls
 from spellbook_builder.tables import table_to_text
@@ -75,6 +75,19 @@ def test_level_pagination_is_followed_and_deduplicated():
     links = fetch_level_links(source, fetcher)
     assert fetcher.requested == [first, second]
     assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray", "Storm Bolt"]
+
+
+def test_empty_level_listing_has_no_links():
+    source = "https://dnd.arkalseif.info/classes/fixture-mage/spells-level-0/index.html"
+    complete = "https://dndtools.org/classes/fixture-mage/spells-level-0/?page_size=1000"
+    assert parse_level_page(fixture("arkal_level_empty.html"), complete) == []
+    assert fetch_level_links(source, FixtureFetcher({complete: fixture("arkal_level_empty.html")})) == []
+
+
+def test_level_page_without_spell_table_is_a_parse_error():
+    page = '<html><body><div id="content"><h2>Fixture Mage level 0 spells</h2><p>Changed markup</p></div></body></html>'
+    with pytest.raises(ArkalParseError, match="No spell table"):
+        parse_level_page(page, "https://dndtools.org/classes/fixture-mage/spells-level-0/?page_size=1000")
 
 
 def test_every_printing_of_a_spell_name_shares_one_id():
@@ -188,6 +201,47 @@ def test_class_import_keeps_one_printing_per_spell_name():
     assert spells["arkal-acid-splash"]["source_book"] == "Player's Handbook v.3.5"
     assert spells["arkal-acid-splash"]["imported_from_classes"] == [{"class_name": "Fixture Mage", "spell_level": 0}]
     assert [item["spell_level"] for item in spells["arkal-storm-bolt"]["imported_from_classes"]] == [0, 2]
+
+
+def test_class_import_skips_levels_without_spells():
+    root = "https://dnd.arkalseif.info/classes/fixture-mage/index.html"
+    level_zero, level_two = (
+        f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000"
+        for level in (0, 2)
+    )
+    pages = {root: fixture("arkal_class.html"), level_zero: fixture("arkal_level_empty.html"), level_two: fixture("arkal_level_complete.html")}
+    pages.update(
+        {
+            f"https://dndtools.org/spells/book--1/{slug}/": spell_page(name)
+            for slug, name in (("flame-orb--10", "Flame Orb"), ("frost-ray--11", "Frost Ray"), ("storm-bolt--12", "Storm Bolt"))
+        }
+    )
+    events: list[dict] = []
+
+    class_record, spells = import_class(root, FixtureFetcher(pages), on_event=events.append)
+
+    assert class_record["levels"] == {"2": ["arkal-flame-orb", "arkal-frost-ray", "arkal-storm-bolt"]}
+    assert len(spells) == 3
+    scanned = [event for event in events if event["type"] == "level_scanned"]
+    assert [(event["level"], event["spells_in_level"]) for event in scanned] == [(0, 0), (2, 3)]
+    assert scanned[-1]["total_levels"] == 2
+    completions = [event for event in events if event["type"] == "level_completed"]
+    assert [(event["level"], event["completed_levels"], event["total_levels"]) for event in completions] == [(2, 1, 1)]
+    assert events[-1]["processed_spells"] == events[-1]["total_spells"] == 3
+
+
+def test_class_import_without_any_spells_fails():
+    root = "https://dnd.arkalseif.info/classes/fixture-mage/index.html"
+    pages = {root: fixture("arkal_class.html")}
+    pages.update(
+        {
+            f"https://dndtools.org/classes/fixture-mage/spells-level-{level}/?page_size=1000": fixture("arkal_level_empty.html")
+            for level in (0, 2)
+        }
+    )
+
+    with pytest.raises(ArkalParseError, match="Fixture Mage lists no spells at any spell level"):
+        import_class(root, FixtureFetcher(pages))
 
 
 def test_class_import_does_not_skip_non_404_fetch_errors():

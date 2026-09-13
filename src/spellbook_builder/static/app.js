@@ -87,7 +87,11 @@
       if (event.class_name) title.textContent = `Importing ${event.class_name}`;
       if (event.type === 'class_discovered') status.textContent = `Found ${totalLevels} spell levels. Scanning their spell lists…`;
       if (event.type === 'level_scan_started') status.textContent = `Scanning the level ${event.level} spell list…`;
-      if (event.type === 'level_scanned') status.textContent = `Level ${event.level}: found ${event.spells_in_level} spells.`;
+      if (event.type === 'level_scanned') {
+        status.textContent = event.spells_in_level
+          ? `Level ${event.level}: found ${event.spells_in_level} spells.`
+          : `Level ${event.level}: no spells listed; skipping this level.`;
+      }
       if (event.type === 'download_started') status.textContent = `Spell lists scanned. Downloading ${totalSpells} spells…`;
       if (event.type === 'spell_downloaded') status.textContent = `Level ${event.level}: downloaded ${event.spell_name}.`;
       if (event.type === 'spell_skipped') status.textContent = `Level ${event.level}: skipped missing spell ${event.spell_name} (404).`;
