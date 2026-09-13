@@ -1,8 +1,8 @@
 # Agent instructions
 
-## Commit your work
+## Commit and push your work
 
-Commit changes yourself, without waiting to be asked. Once a change is finished, commit everything it touched: code, tests, and docs.
+Commit changes yourself, without waiting to be asked. Once a change is finished, commit everything it touched: code, tests, and docs. Push each commit to `origin main` straight away.
 
 ## Rebuild the packages after each commit
 
