@@ -10,6 +10,7 @@ from pypdf import PdfReader
 
 from .pdfgen import RENDERER_VERSION, concatenate_pdfs, pdf_content_hashes, render_batch_segment, render_toc
 from .store import RuntimeStore
+from .summoning_feats import materialize_summon_statblock, normalize_summoning_feats, rashemi_variant, summon_display_title
 from .util import atomic_json_write, normalized_name, portable_relative_path, resolve_portable_path, sha256_file, utc_now
 
 
@@ -40,8 +41,76 @@ def summon_key(spell_name: str) -> str | None:
     return f"{family}:{levels[roman]}"
 
 
-def expand_entities(open_entities: list[dict], spells: dict, summon_lists: dict) -> list[dict]:
+def _summon_entities(
+    summon_list: dict,
+    summon_key_value: str,
+    monsters: dict[str, dict],
+    summoning_feats: list[str],
+    *,
+    only_monster_name: str | None = None,
+    granted_by_feat: str | None = None,
+) -> list[dict]:
+    entities: list[dict] = []
+    found_restricted_creature = False
+    for entry in summon_list["entries"]:
+        refs = entry.get("monster_refs") or ([entry["monster_ref"]] if entry.get("monster_ref") else [])
+        if not refs:
+            raise ServiceError(f"Unresolved summon entry for {summon_list.get('spell_name', summon_key_value)}: {entry['display_name']}")
+        names = entry.get("resolved_names", [])
+        for index, ref in enumerate(refs):
+            monster = monsters.get(ref)
+            resolved_name = names[index] if index < len(names) else (monster or {}).get("name", ref.rsplit("::", 1)[-1].replace("-", " ").title())
+            if only_monster_name and normalized_name(resolved_name) != normalized_name(only_monster_name):
+                continue
+            found_restricted_creature = True
+            title = entry["display_name"]
+            if len(refs) > 1:
+                title += " — " + resolved_name
+            if granted_by_feat == "nightbringer_initiate":
+                title += " — Nightbringer Initiate"
+            variants: list[str | None] = [None]
+            if "rashemi_elemental_summoning" in summoning_feats and monster:
+                if alternative := rashemi_variant(monster):
+                    variants.append(alternative)
+            for variant in variants:
+                active: list[str] = []
+                if monster:
+                    _statblock, active = materialize_summon_statblock(monster, summoning_feats, summon_key_value, variant)
+                entities.append(
+                    {
+                        "kind": "summon_statblock",
+                        "id": ref,
+                        "title": summon_display_title(title, active, variant),
+                        "summon_list": summon_key_value,
+                        "notes": entry.get("notes", []),
+                        "alignment": entry.get("alignment"),
+                        "summoning_feats": active,
+                        "selected_summoning_feats": summoning_feats,
+                        "summon_variant": variant,
+                        "granted_by_feat": granted_by_feat,
+                    }
+                )
+    if only_monster_name and not found_restricted_creature:
+        raise ServiceError(f"{summon_list.get('spell_name', summon_key_value)} has no {only_monster_name} statblock")
+    return entities
+
+
+def expand_entities(
+    open_entities: list[dict],
+    spells: dict,
+    summon_lists: dict,
+    monsters: dict[str, dict] | None = None,
+    summoning_feats: list[str] | tuple[str, ...] | None = None,
+) -> list[dict]:
+    monsters = monsters or {}
+    selected_feats = normalize_summoning_feats(summoning_feats)
     expanded: list[dict] = []
+    open_spell_names = {
+        normalized_name(spells[entity["id"]]["name"])
+        for entity in open_entities
+        if entity.get("kind") == "spell" and entity.get("id") in spells
+    }
+    nightbringer_added = False
     for source in open_entities:
         if source["kind"] != "spell" or source["id"] not in spells:
             raise ServiceError(f"Unknown spell entity: {source}")
@@ -52,26 +121,58 @@ def expand_entities(open_entities: list[dict], spells: dict, summon_lists: dict)
             summon_list = summon_lists.get(key)
             if not summon_list:
                 raise ServiceError(f"{spell['name']} needs its summon creatures; choose Import summons in the Data section (CLI: build-summon-index)")
-            for entry in summon_list["entries"]:
-                refs = entry.get("monster_refs") or ([entry["monster_ref"]] if entry.get("monster_ref") else [])
-                if not refs:
-                    raise ServiceError(f"Unresolved summon entry for {spell['name']}: {entry['display_name']}")
-                names = entry.get("resolved_names", [])
-                for index, ref in enumerate(refs):
-                    title = entry["display_name"]
-                    if len(refs) > 1:
-                        title += " — " + (names[index] if index < len(names) else ref.rsplit("::", 1)[-1].replace("-", " ").title())
-                    expanded.append(
-                        {
-                            "kind": "summon_statblock",
-                            "id": ref,
-                            "title": title,
-                            "summon_list": key,
-                            "notes": entry.get("notes", []),
-                            "alignment": entry.get("alignment"),
-                        }
+            expanded.extend(_summon_entities(summon_list, key, monsters, selected_feats))
+            if (
+                key == "summon_natures_ally:5"
+                and "nightbringer_initiate" in selected_feats
+                and "summon monster v" not in open_spell_names
+                and not nightbringer_added
+            ):
+                nightbringer_list = summon_lists.get("summon_monster:5")
+                if not nightbringer_list:
+                    raise ServiceError("Nightbringer Initiate needs the Summon Monster V creatures; choose Import summons in the Data section")
+                expanded.append(
+                    {
+                        "kind": "feat_spell",
+                        "id": "feat:nightbringer_initiate:summon_monster_v",
+                        "title": "Summon Monster V — Nightbringer Initiate",
+                        "feat_id": "nightbringer_initiate",
+                    }
+                )
+                expanded.extend(
+                    _summon_entities(
+                        nightbringer_list,
+                        "summon_monster:5",
+                        monsters,
+                        selected_feats,
+                        only_monster_name="Shadow Mastiff",
+                        granted_by_feat="nightbringer_initiate",
                     )
+                )
+                nightbringer_added = True
     return expanded
+
+
+def _materialized_monsters(entities: list[dict], monsters: dict[str, dict]) -> dict[int, dict]:
+    rendered: dict[int, dict] = {}
+    for index, entity in enumerate(entities):
+        if entity["kind"] != "summon_statblock":
+            continue
+        monster = monsters.get(entity["id"])
+        if monster is None:
+            raise ServiceError(f"Summon statblock is absent from monster index: {entity['id']}")
+        rendered[index], _active = materialize_summon_statblock(
+            monster,
+            entity.get("selected_summoning_feats", entity.get("summoning_feats", [])),
+            entity["summon_list"],
+            entity.get("summon_variant"),
+        )
+        if entity.get("granted_by_feat") == "nightbringer_initiate":
+            rendered[index]["fields"] = {
+                "Summoning Access": "Nightbringer Initiate: summon monster V as a druid 5th-level spell; shadow mastiff only.",
+                **rendered[index]["fields"],
+            }
+    return rendered
 
 
 def _copy_atomic(source: Path, target: Path) -> None:
@@ -108,17 +209,16 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
         raise ServiceError(f"Spellbook uses renderer {book_renderer}, newer than this application's renderer {RENDERER_VERSION}")
     spells = store.load_spells()
     monsters = store.load_monsters()
-    expanded = expand_entities(open_batch["entities"], spells, store.load_summon_lists())
-    for entity in expanded:
-        if entity["kind"] == "summon_statblock" and entity["id"] not in monsters:
-            raise ServiceError(f"Summon statblock is absent from monster index: {entity['id']}")
+    summoning_feats = normalize_summoning_feats(book.get("summoning_feats", []))
+    expanded = expand_entities(open_batch["entities"], spells, store.load_summon_lists(), monsters, summoning_feats)
+    rendered_monsters = _materialized_monsters(expanded, monsters)
     batch_id = open_batch["id"]
     book_dir = store.spellbook_dir(spellbook_id)
     segment = book_dir / "batches" / f"{batch_id}.pdf"
     if segment.exists():
         raise ServiceError(f"Refusing to overwrite immutable batch segment: {segment}")
     page_start = book["content_page_count"] + 1
-    page_count, anchors = render_batch_segment(segment, expanded, spells, monsters, page_start)
+    page_count, anchors = render_batch_segment(segment, expanded, spells, monsters, page_start, rendered_monsters=rendered_monsters)
     anchor_map = {entry["entity_index"]: entry for entry in anchors}
     for index, entity in enumerate(expanded):
         entity["page"] = anchor_map[index]["page"]
@@ -134,6 +234,7 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
         "segment": portable_relative_path(segment, book_dir),
         "segment_sha256": sha256_file(segment),
         "renderer_version": RENDERER_VERSION,
+        "summoning_feats": summoning_feats,
     }
     candidate = dict(book)
     candidate["batches"] = book["batches"] + [batch]
@@ -151,6 +252,7 @@ def commit_open_batch(store: RuntimeStore, spellbook_id: str) -> dict:
     manifest = {
         "schema_version": 1,
         "renderer_version": RENDERER_VERSION,
+        "summoning_feats": summoning_feats,
         "spellbook_id": spellbook_id,
         "batch_id": batch_id,
         "committed_at": committed_at,

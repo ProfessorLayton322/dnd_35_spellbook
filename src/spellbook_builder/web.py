@@ -19,6 +19,7 @@ from .fetch import Fetcher
 from .service import commit_open_batch, prefix_search
 from .srd import build_summon_index
 from .store import RuntimeStore
+from .summoning_feats import SUMMONING_FEATS
 from .util import resolve_portable_path
 
 
@@ -113,6 +114,8 @@ def create_app(runtime_dir: Path) -> FastAPI:
                 "state": state,
                 "selected": selected,
                 "open_items": open_items,
+                "summoning_feats": SUMMONING_FEATS,
+                "selected_summoning_feats": set((selected or {}).get("summoning_feats", [])),
                 "message": message,
                 "error": error,
             },
@@ -215,6 +218,16 @@ def create_app(runtime_dir: Path) -> FastAPI:
         try:
             deleted = app.state.store.delete_spellbook(book_id)
             return redirect(message=f"Deleted spellbook {deleted['name']}")
+        except Exception as exc:
+            return redirect(book_id, error=str(exc))
+
+    @app.post("/spellbooks/{book_id}/summoning-feats")
+    def summoning_feats_route(book_id: str, summoning_feats: list[str] = Form(default=[])):
+        try:
+            book = app.state.store.set_summoning_feats(book_id, summoning_feats)
+            count = len(book["summoning_feats"])
+            message = f"Saved {count} summoning feat(s); changes apply to future committed batches"
+            return redirect(book_id, message)
         except Exception as exc:
             return redirect(book_id, error=str(exc))
 

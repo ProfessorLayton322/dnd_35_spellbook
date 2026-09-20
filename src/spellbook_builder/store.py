@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .arkal import collapse_spell_printings, spell_id_from_name, spell_printing_rank
 from .pdfgen import RENDERER_VERSION
+from .summoning_feats import normalize_summoning_feats
 from .util import atomic_json_write, read_json, slugify, utc_now
 
 
@@ -312,6 +313,7 @@ class RuntimeStore:
             "name": name,
             "created_at": utc_now(),
             "renderer_version": RENDERER_VERSION,
+            "summoning_feats": [],
             "batches": [],
             "open_batch": None,
             "content_page_count": 0,
@@ -335,6 +337,12 @@ class RuntimeStore:
             raise StoreError(f"Unknown spellbook: {book['id']}")
         state["spellbooks"][book["id"]] = book
         self.save_state(state)
+
+    def set_summoning_feats(self, spellbook_id: str, feat_ids: list[str]) -> dict:
+        book = self.get_spellbook(spellbook_id)
+        book["summoning_feats"] = normalize_summoning_feats(feat_ids)
+        self.update_spellbook(book)
+        return book
 
     def delete_spellbook(self, spellbook_id: str) -> dict:
         """Delete a spellbook with its open batch, immutable segments, and exports."""

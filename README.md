@@ -35,6 +35,7 @@ The main modules are:
 src/spellbook_builder/
   arkal.py       Arkalself class, level-list, and complete spell parsing
   srd.py         d20srd summon-table, monster page, and variant resolution
+  summoning_feats.py  composable summon-feat rules and derived statblocks
   tables.py      deterministic HTML table-to-plain-text conversion
   store.py       versioned indexes/state and atomic JSON persistence
   service.py     batch workflow, summon expansion, exports, verification
@@ -88,15 +89,18 @@ Class imports are committed only after every non-missing spell has been fetched.
 
 The summon build reads all Summon Monster I–IX and Summon Nature's Ally I–IX tables. It prefers linked monster pages and anchors, then resolves named statblock columns deterministically. Qualified `(any)` entries intentionally expand to all applicable variants. An unresolved entry is written to `summon_validation.json` and makes the command fail. In the app, the import is still saved and the unresolved entries are listed in an error message.
 
+Each base monster is imported once into the canonical index. Feat-adjusted and templated versions are derived in memory when a batch is committed; they do not create duplicate downloads or index records. Re-import summons only when the remote base data needs refreshing.
+
 ## Building a spellbook
 
 In the browser:
 
 1. Create and select a named empty spellbook.
-2. Begin a batch.
-3. Add individual spells with beginning-only, normalized, case-insensitive prefix suggestions, or add an imported class/level in one operation.
-4. Remove mistakes while the batch is open.
-5. End the batch to resolve summons, render its immutable segment, update the full PDF, and create the two diff exports.
+2. Select every summoning feat the character has and save the selection.
+3. Begin a batch.
+4. Add individual spells with beginning-only, normalized, case-insensitive prefix suggestions, or add an imported class/level in one operation.
+5. Remove mistakes while the batch is open.
+6. End the batch to resolve summons, apply the selected feats, render its immutable segment, update the full PDF, and create the two diff exports.
 
 Only one open batch exists per book. Duplicate spell entities in one open batch are ignored. A committed batch cannot be edited through the application.
 
@@ -104,9 +108,21 @@ A whole spellbook can be deleted from its heading. This removes its open batch, 
 
 Committing a batch that contains a Summon Monster or Summon Nature's Ally spell requires the summon creatures (**Import summons** in the Data section). For a summon spell, its spell entity is immediately followed by every relevant summon statblock in table order. A statblock is not globally deduplicated away from that required location.
 
+### Summoning feats
+
+The spellbook-level **Character summoning feats** control supports multiple selections. The selected set is snapshotted into each committed batch and its manifest. Changing it affects the current and future open batches, never immutable batches already committed.
+
+- **Augment Summoning** applies its +4 enhancement bonuses to Strength and Constitution and recalculates affected hit points, attacks, damage, grapple, saves, abilities, and skills.
+- **Beckon the Frozen** adds the cold subtype and the +1d6 cold natural-attack rider. Fire-subtype creatures remain unchanged and their statblocks explain why the feat cannot apply.
+- **Rashemi Elemental Summoning** keeps every normal air or earth elemental statblock and adds an orglash or thomil statblock beside it. The complete template adjustments and abilities are included.
+- **Greenbound Summoning** applies only to animals summoned with Summon Nature's Ally. Its type, abilities, defenses, slam, spell-like abilities, healing, resistances, senses, skills, and other template changes are included.
+- **Nightbringer Initiate** adds its restricted Druid 5 `summon monster V` entry after Summon Nature's Ally V and includes only the shadow mastiff. Other selected feats also apply to that shadow mastiff.
+
+Effects compose on one derived statblock. For example, an animal with Greenbound Summoning, Beckon the Frozen, and Augment Summoning receives the summed ability changes, the greenbound template, and the frostfell changes. Rules and source links in the UI follow [D&D Tools: Augment Summoning](https://dndtools.org/feats/players-handbook-v35--6/augment-summoning--141/), [Beckon the Frozen](https://www.dndtools.org/feats/frostburn--68/beckon-the-frozen--201/), [Rashemi Elemental Summoning](https://www.dndtools.org/feats/unapproachable-east--33/rashemi-elemental-summoning--2383/), [Greenbound Summoning](https://dndtools.org/feats/lost-empires-of-faerun--30/greenbound-summoning--1317/), and [Nightbringer Initiate](https://www.dndtools.org/feats/faiths-of-eberron--8/nightbringer-initiate--3266/). The Greenbound, Orglash, and Thomil mechanics are applied from their referenced creature templates.
+
 ## PDF page layout
 
-Content pages follow these rules (renderer 2):
+Content pages follow these rules (renderer 3; renderer 2 has the same flowing layout but no feat-derived entities):
 
 - **Only a new batch starts a new page.** Each batch is rendered as its own segment, and every segment begins on a fresh content page. Nothing else forces a page break.
 - **Spells and summon statblocks flow continuously.** Each printable entity begins directly after the previous one ends, on the same page when there is room. Summon statblocks follow exactly the same rule as spells, both after their summon spell and after one another.
@@ -161,7 +177,7 @@ Import and summon commands print progress and actionable parse/fetch errors. Net
 
 Every top-level document and canonical record has `schema_version: 1`.
 
-`state.json` contains `imported_classes`, index metadata, and `spellbooks`. An imported class maps string spell levels to ordered canonical spell IDs. A spellbook contains a stable ID, name, renderer version (updated to the application's renderer on each commit), cumulative content-page count, an optional `open_batch`, ordered immutable `batches`, and export manifests.
+`state.json` contains `imported_classes`, index metadata, and `spellbooks`. An imported class maps string spell levels to ordered canonical spell IDs. A spellbook contains a stable ID, name, selected `summoning_feats`, renderer version (updated to the application's renderer on each commit), cumulative content-page count, an optional `open_batch`, ordered immutable `batches`, and export manifests. Each committed batch and manifest retains the exact feat-selection snapshot used to render it.
 
 `indexes/spells.json` maps name-derived spell IDs (one per spell name) to records containing source URL/book/page, school/subschool/descriptors, global class-level mappings, components and all standard spell labels, ordered `content_blocks`, section-preserving body data, ordered plain-text tables, imported class memberships, and fetch time.
 
@@ -207,7 +223,7 @@ Normal tests are entirely fixture/local and do not depend on either remote site:
 .venv/bin/pytest
 ```
 
-Compact sanitized fixtures cover class/level discovery, complete spell parsing, table spans and footnotes, summon qualifiers, Dire Bat, the Dire Rat multi-column base/fiendish split, multi-table retention, and resolution. The PDF tests commit two batches and prove TOC coverage, numbering continuation, exact append bytes, summon placement, and historical content-stream stability. They also prove continuous entity flow, separator lines between adjacent entities, a fresh page for each batch, and renderer upgrades for older spellbooks.
+Compact sanitized fixtures cover class/level discovery, complete spell parsing, table spans and footnotes, summon qualifiers, Dire Bat, the Dire Rat multi-column base/fiendish split, multi-table retention, and resolution. Summoning-feat tests cover selection validation, canonical-index immutability, recalculated Augment Summoning statistics, Greenbound/Beckon/Augment stacking, the Beckon fire exclusion, both Rashemi choices, and Nightbringer's shadow-mastiff restriction. The PDF tests commit two batches and prove TOC coverage, numbering continuation, exact append bytes, summon placement, feat snapshots, and historical content-stream stability. They also prove continuous entity flow, separator lines between adjacent entities, a fresh page for each batch, and renderer upgrades for older spellbooks.
 
 Live verification performed on 2026-09-02 produced:
 

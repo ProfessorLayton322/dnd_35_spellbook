@@ -124,6 +124,40 @@ def test_delete_routes_remove_spellbooks_and_class_spell_lists(tmp_path):
     assert store.load_spells() == {}
 
 
+def test_spellbook_summoning_feats_support_multiple_selection(tmp_path):
+    app = web.create_app(tmp_path / "runtime")
+    book = app.state.store.create_spellbook("Summoner")
+    page = render_index(app)
+    assert page.count('name="summoning_feats"') == 5
+    assert "Augment Summoning" in page and "Nightbringer Initiate" in page
+
+    response = route_endpoint(app, "/spellbooks/{book_id}/summoning-feats")(
+        book_id=book["id"],
+        summoning_feats=["greenbound_summoning", "augment_summoning"],
+    )
+
+    assert response.status_code == 303
+    assert app.state.store.get_spellbook(book["id"])["summoning_feats"] == [
+        "augment_summoning",
+        "greenbound_summoning",
+    ]
+    selected_page = render_index(app)
+    assert 'value="augment_summoning" checked' in selected_page
+    assert 'value="greenbound_summoning" checked' in selected_page
+
+
+def test_spellbook_summoning_feats_reject_unknown_values(tmp_path):
+    app = web.create_app(tmp_path / "runtime")
+    book = app.state.store.create_spellbook("Summoner")
+
+    response = route_endpoint(app, "/spellbooks/{book_id}/summoning-feats")(
+        book_id=book["id"], summoning_feats=["unknown"]
+    )
+
+    assert "error=" in response.headers["location"]
+    assert app.state.store.get_spellbook(book["id"])["summoning_feats"] == []
+
+
 def test_export_files_open_inline_with_descriptive_names(tmp_path):
     app = web.create_app(tmp_path / "runtime")
     store = app.state.store

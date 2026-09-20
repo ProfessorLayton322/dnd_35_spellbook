@@ -16,7 +16,8 @@ from reportlab.platypus import Flowable, HRFlowable, KeepTogether, Paragraph, Si
 
 # 1: every entity started on a new page.
 # 2: entities flow continuously, separated by a black rule; only a batch starts a new page.
-RENDERER_VERSION = 2
+# 3: feat-derived summon statblocks and feat-granted summon spell entries.
+RENDERER_VERSION = 3
 
 
 def _safe(value) -> str:
@@ -142,6 +143,24 @@ def monster_flowables(monster: dict, display_name: str, styles) -> tuple[list, l
     return heading, body
 
 
+def feat_spell_flowables(entity: dict, styles) -> tuple[list, list]:
+    """Render the summon spell access granted by a selected character feat."""
+
+    heading = [Paragraph(_safe(entity["title"]), styles["EntityTitle"])]
+    body = [
+        _line("Level", "Druid 5", styles),
+        _line("Restriction", "Can only summon a shadow mastiff", styles),
+        _line("Source", "Nightbringer Initiate — Faiths of Eberron, p. 147", styles),
+        Spacer(1, 5),
+        Paragraph(
+            "Nightbringer Initiate adds <i>summon monster V</i> to the druid spell list at 5th level. "
+            "This granted version can summon only a shadow mastiff; otherwise use the normal spell rules.",
+            styles["BodySmall"],
+        ),
+    ]
+    return heading, [item for item in body if item is not None]
+
+
 def _atomic_pdf_target(path: Path) -> tuple[Path, Path]:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -149,7 +168,15 @@ def _atomic_pdf_target(path: Path) -> tuple[Path, Path]:
     return Path(name), path
 
 
-def render_batch_segment(path: Path, entities: list[dict], spells: dict, monsters: dict, logical_page_start: int) -> tuple[int, list[dict]]:
+def render_batch_segment(
+    path: Path,
+    entities: list[dict],
+    spells: dict,
+    monsters: dict,
+    logical_page_start: int,
+    *,
+    rendered_monsters: dict[int, dict] | None = None,
+) -> tuple[int, list[dict]]:
     if not entities:
         raise ValueError("Cannot render an empty batch")
     styles = _styles()
@@ -160,7 +187,10 @@ def render_batch_segment(path: Path, entities: list[dict], spells: dict, monster
         if entity["kind"] == "spell":
             heading, body = spell_flowables(spells[entity["id"]], styles)
         elif entity["kind"] == "summon_statblock":
-            heading, body = monster_flowables(monsters[entity["id"]], entity["title"], styles)
+            monster = (rendered_monsters or {}).get(index, monsters[entity["id"]])
+            heading, body = monster_flowables(monster, entity["title"], styles)
+        elif entity["kind"] == "feat_spell":
+            heading, body = feat_spell_flowables(entity, styles)
         else:
             raise ValueError(f"Unknown printable entity kind: {entity['kind']}")
         # Entities flow directly after one another; only a new batch segment starts a new page.

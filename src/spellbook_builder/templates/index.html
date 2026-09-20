@@ -81,6 +81,21 @@
       <form action="/spellbooks/{{ selected.id }}/delete" method="post" data-confirm="Delete the spellbook “{{ selected.name }}” with all of its batches and PDFs? This cannot be undone."><button class="danger">Delete spellbook</button></form>
     </div>
     <p>{{ selected.batches|length }} committed batch(es); {{ selected.content_page_count }} content page(s).</p>
+    <form action="/spellbooks/{{ selected.id }}/summoning-feats" method="post" class="summoning-feats-form">
+      <fieldset>
+        <legend>Character summoning feats</legend>
+        <p class="muted">Select every feat the character has. Effects stack in summon statblocks committed from now on; existing append-only batches stay unchanged.</p>
+        <div class="feat-grid">
+          {% for feat in summoning_feats %}
+          <label class="feat-option">
+            <input type="checkbox" name="summoning_feats" value="{{ feat.id }}" {% if feat.id in selected_summoning_feats %}checked{% endif %}>
+            <span><b>{{ feat.name }}</b><small>{{ feat.summary }} <a href="{{ feat.source_url }}" target="_blank" rel="noopener">{{ feat.source }}</a></small></span>
+          </label>
+          {% endfor %}
+        </div>
+        <button>Save summoning feats</button>
+      </fieldset>
+    </form>
     {% if not selected.open_batch %}
       <form action="/spellbooks/{{ selected.id }}/begin" method="post"><button class="primary">Begin batch</button></form>
     {% else %}

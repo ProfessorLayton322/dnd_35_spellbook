@@ -29,6 +29,32 @@ def fiendish_dire_rat() -> dict:
     }
 
 
+def wolf() -> dict:
+    return {
+        "id": "wolf::wolf",
+        "name": "Wolf",
+        "fields": {
+            "Size/Type": "Medium Animal",
+            "Hit Dice": "2d8+4 (13 hp)",
+            "Initiative": "+2",
+            "Armor Class": "14 (+2 Dex, +2 natural), touch 12, flat-footed 12",
+            "Base Attack/Grapple": "+1 / +2",
+            "Attack": "Bite +3 melee ( 1d6+1 )",
+            "Full Attack": "Bite +3 melee ( 1d6+1 )",
+            "Special Attacks": "Trip",
+            "Special Qualities": "Low-light vision, scent",
+            "Saves": "Fort +5, Ref +5, Will +1",
+            "Abilities": "Str 13, Dex 15, Con 15, Int 2, Wis 12, Cha 6",
+            "Skills": "Hide +2, Listen +3, Move Silently +3, Spot +3, Survival +1",
+            "Feats": "Track, Weapon Focus (bite)",
+            "Challenge Rating": "1",
+            "Level Adjustment": "—",
+        },
+        "shared_sections": [{"type": "paragraph", "text": "A pack hunter."}],
+        "source_url": "https://www.d20srd.org/srd/monsters/wolf.htm",
+    }
+
+
 def rule_count(pdf_path: Path) -> int:
     # Entity separator lines are the only stroked paths on content pages.
     return sum(
@@ -134,6 +160,53 @@ def test_entities_flow_continuously_with_lines_between_them(tmp_path: Path):
     _page_count, anchors = render_batch_segment(tmp_path / "mixed.pdf", long_only + short[:1], spells, monsters, 1)
     assert [anchor["page"] for anchor in anchors] == [1, long_pages]
     assert rule_count(tmp_path / "mixed.pdf") == 1
+
+
+def test_committed_summon_statblock_contains_stacked_feat_effects_and_snapshot(tmp_path: Path):
+    store = RuntimeStore(tmp_path / "runtime")
+    summon = spell("summon-natures-ally-ii", "Summon Nature's Ally II")
+    creature = wolf()
+    store.save_spells({summon["id"]: summon})
+    store.save_summon_indexes(
+        {
+            "summon_natures_ally:2": {
+                "spell_name": "Summon Nature's Ally II",
+                "entries": [
+                    {
+                        "display_name": "Wolf (animal)",
+                        "monster_refs": [creature["id"]],
+                        "resolved_names": ["Wolf"],
+                        "notes": ["animal"],
+                        "alignment": None,
+                    }
+                ],
+            }
+        },
+        {creature["id"]: creature},
+        {"schema_version": 1, "unresolved": []},
+    )
+    book = store.create_spellbook("Summoner")
+    selected = ["augment_summoning", "beckon_the_frozen", "greenbound_summoning"]
+    store.set_summoning_feats(book["id"], selected)
+    store.begin_batch(book["id"])
+    store.add_open_entity(book["id"], {"kind": "spell", "id": summon["id"]})
+
+    committed = commit_open_batch(store, book["id"])
+
+    batch = committed["batches"][0]
+    assert batch["summoning_feats"] == selected
+    assert batch["entities"][1]["summoning_feats"] == selected
+    assert batch["entities"][1]["selected_summoning_feats"] == selected
+    assert store.load_monsters()[creature["id"]] == creature
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(str(store.spellbook_dir(book["id"]) / batch["segment"])).pages
+    )
+    assert "Wolf (animal) — Greenbound, Frostfell, Augment Summoning" in text
+    assert "Str 23, Dex 17, Con 23" in text
+    assert "Medium Plant (Augmented Animal, Cold)" in text
+    assert "+1d6 cold damage on every natural attack" in text
+    assert "wall of thorns" in text
 
 
 def test_older_renderer_spellbook_commits_next_batch_with_current_renderer(tmp_path: Path):

@@ -46,6 +46,16 @@ code { background: #eee; padding: .1rem .25rem; }
 .export-links a { padding: .45rem .75rem; border: 1px solid #8e99a6; border-radius: 5px; background: white; color: var(--accent); text-decoration: none; }
 .export-links a:hover { background: #eef2f6; }
 .summon-import { align-items: center; margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--rule); }
+.summoning-feats-form { margin: 1rem 0; }
+.summoning-feats-form fieldset { margin: 0; padding: .8rem 1rem 1rem; border: 1px solid var(--border); border-radius: 5px; }
+.summoning-feats-form legend { padding: 0 .35rem; font-weight: 700; }
+.summoning-feats-form fieldset > .muted { margin: 0 0 .7rem; }
+.feat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .5rem 1rem; margin-bottom: .85rem; }
+.feat-option { display: flex; grid-template-columns: none; align-items: start; gap: .55rem; padding: .45rem; border: 1px solid var(--rule); border-radius: 5px; font-weight: 400; }
+.feat-option input { flex: 0 0 auto; margin-top: .2rem; }
+.feat-option span { min-width: 0; }
+.feat-option small { display: block; margin-top: .15rem; color: #666; line-height: 1.35; }
+.feat-option a { color: var(--accent); }
 .import-progress { margin: 1rem 0; padding: .85rem 1rem; border: 1px solid #b8c5d3; border-radius: 5px; background: #f5f8fb; }
 .import-progress[hidden] { display: none; }
 .progress-heading, .progress-counts { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }

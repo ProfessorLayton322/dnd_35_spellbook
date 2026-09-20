@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import socket
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -23,14 +22,13 @@ def bind_local_socket(host: str = DEFAULT_HOST, preferred_port: int = DEFAULT_PO
     """Bind the preferred port, or any free port when it is taken.
 
     Binding here and handing the socket to uvicorn avoids a race between
-    probing a port and the server opening it. Windows ``SO_REUSEADDR`` would
-    let two servers share a port, so it is only set on other platforms.
+    probing a port and the server opening it. ``SO_REUSEADDR`` is deliberately
+    not enabled: on Windows and some Linux configurations it can let two local
+    processes bind the same port, which defeats the occupied-port fallback.
     """
 
     for port in dict.fromkeys((preferred_port, 0)):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if sys.platform != "win32":
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
