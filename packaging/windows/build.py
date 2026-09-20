@@ -125,7 +125,9 @@ def build_stage(stage: Path, cache: Path) -> None:
 
     if f"{sys.version_info.major}.{sys.version_info.minor}" == ".".join(PYTHON_VERSION.split(".")[:2]):
         # Bytecode made by the same Python version shortens the first start.
-        compileall.compile_dir(site_packages, quiet=1, workers=0, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)
+        # Keep this single-process: some supported build hosts (notably WSL)
+        # cannot start Python's multiprocessing fork server reliably.
+        compileall.compile_dir(site_packages, quiet=1, workers=1, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)
     else:
         print(f"Skipping bytecode compilation: run with Python {PYTHON_VERSION.rsplit('.', 1)[0]} to include it")
 
