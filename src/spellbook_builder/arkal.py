@@ -128,6 +128,29 @@ def _pagination_urls(html: str, fetched_url: str) -> list[str]:
 
 
 def fetch_level_links(level_url: str, fetcher: Fetcher) -> list[dict]:
+    """Use the live list, or a verified complete static list if it is unavailable."""
+
+    try:
+        return _fetch_live_level_links(level_url, fetcher)
+    except FetchError:
+        if (urlparse(level_url).hostname or "").casefold() not in ARKALSEIF_STATIC_HOSTS:
+            raise
+        # The static mirror ignores pagination queries. Only accept its first
+        # page when the advertised total proves that no spells are missing.
+        html = fetcher.get(level_url)
+        links = parse_level_page(html, level_url)
+        total = _level_total(html)
+        if total is None or len(links) != total:
+            expected = str(total) if total is not None else "an unknown number of"
+            raise ArkalParseError(
+                f"Live spell listing is unavailable for {level_url}; "
+                f"static mirror completeness cannot be verified: "
+                f"found {len(links)} of {expected} advertised items"
+            )
+        return links
+
+
+def _fetch_live_level_links(level_url: str, fetcher: Fetcher) -> list[dict]:
     """Fetch and de-duplicate all spell links across a level listing."""
 
     queue = [_complete_level_url(level_url)]

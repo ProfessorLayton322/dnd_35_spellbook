@@ -77,11 +77,63 @@ def test_level_pagination_is_followed_and_deduplicated():
     assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray", "Storm Bolt"]
 
 
+@pytest.mark.parametrize("status_code", [403, 404, 503, None])
+def test_unavailable_live_listing_uses_complete_static_mirror(status_code):
+    source = "https://dnd.arkalseif.info/classes/fixture-mage/spells-level-2/index.html"
+    complete = "https://dndtools.org/classes/fixture-mage/spells-level-2/?page_size=1000"
+    fetcher = FixtureFetcher({
+        complete: FetchError("Live listing unavailable", status_code=status_code),
+        source: fixture("arkal_level_complete.html"),
+    })
+
+    links = fetch_level_links(source, fetcher)
+
+    assert fetcher.requested == [complete, source]
+    assert [item["name"] for item in links] == ["Flame Orb", "Frost Ray", "Storm Bolt"]
+    assert all(item["url"].startswith("https://dnd.arkalseif.info/spells/") for item in links)
+
+
+@pytest.mark.parametrize("listing", [
+    fixture("arkal_level_page_1.html"),
+    fixture("arkal_level_complete.html").replace("total 3 items", ""),
+])
+def test_unavailable_live_listing_does_not_accept_unverified_static_list(listing):
+    source = "https://dnd.arkalseif.info/classes/fixture-mage/spells-level-2/index.html"
+    complete = "https://dndtools.org/classes/fixture-mage/spells-level-2/?page_size=1000"
+    fetcher = FixtureFetcher({complete: FetchError("Blocked", status_code=403), source: listing})
+
+    with pytest.raises(ArkalParseError, match="static mirror completeness cannot be verified"):
+        fetch_level_links(source, fetcher)
+    assert fetcher.requested == [complete, source]
+
+
+def test_live_listing_failure_does_not_fall_back_for_other_hosts():
+    source = "https://example.test/classes/fixture-mage/spells-level-2/"
+    complete = source + "?page_size=1000"
+    fetcher = FixtureFetcher({complete: FetchError("Blocked", status_code=403)})
+
+    with pytest.raises(FetchError, match="Blocked"):
+        fetch_level_links(source, fetcher)
+    assert fetcher.requested == [complete]
+
+
 def test_empty_level_listing_has_no_links():
     source = "https://dnd.arkalseif.info/classes/fixture-mage/spells-level-0/index.html"
     complete = "https://dndtools.org/classes/fixture-mage/spells-level-0/?page_size=1000"
     assert parse_level_page(fixture("arkal_level_empty.html"), complete) == []
     assert fetch_level_links(source, FixtureFetcher({complete: fixture("arkal_level_empty.html")})) == []
+
+
+def test_unavailable_live_empty_listing_uses_verified_empty_static_table():
+    source = "https://dnd.arkalseif.info/classes/fixture-mage/spells-level-0/index.html"
+    complete = "https://dndtools.org/classes/fixture-mage/spells-level-0/?page_size=1000"
+    fetcher = FixtureFetcher({
+        complete: FetchError("Blocked", status_code=403),
+        source: fixture("arkal_level_empty.html"),
+    })
+
+    assert fetch_level_links(source, fetcher) == []
+    assert fetcher.requested == [complete, source]
 
 
 def test_level_page_without_spell_table_is_a_parse_error():
